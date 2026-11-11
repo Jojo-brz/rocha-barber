@@ -1,134 +1,158 @@
 package domain
 
 import (
-	"errors"
 	"time"
 )
 
-var (
-	ErrMaxUsersReached     = errors.New("limite máximo estrito de 5 colaboradores atingido")
-	ErrCannotDeleteCEO     = errors.New("o Administrador/CEO não pode ser removido do sistema")
-	ErrInvalidPIN          = errors.New("o PIN deve conter exatamente 4 dígitos numéricos")
-	ErrPINAlreadyExists    = errors.New("este PIN já está cadastrado para outro membro da equipe")
-	ErrUserNotFound        = errors.New("colaborador não encontrado")
-	ErrUnauthorized        = errors.New("PIN incorreto ou usuário inativo")
-	ErrInvalidAmount       = errors.New("o valor do lançamento deve ser maior que zero")
-)
-
-type UserRole string
+// Tipos alinhados com os CHECK constraints do seu Neon PostgreSQL
+type PapelUsuario string
 
 const (
-	RoleCEO      UserRole = "CEO"
-	RoleBarbeiro UserRole = "BARBEIRO"
+	PapelAdmin    PapelUsuario = "admin"
+	PapelBarbeiro PapelUsuario = "barbeiro"
 )
 
-type PaymentMethod string
+type TipoMovimentacao string
 
 const (
-	PaymentPIX      PaymentMethod = "PIX"
-	PaymentDinheiro PaymentMethod = "DINHEIRO"
-	PaymentCartao   PaymentMethod = "CARTAO"
+	TipoEntrada TipoMovimentacao = "entrada"
+	TipoSaida   TipoMovimentacao = "saida"
 )
 
-type TransactionType string
+type FormaPagamento string
 
 const (
-	TypeEntrada TransactionType = "ENTRADA"
-	TypeSaida   TransactionType = "SAIDA"
+	PagamentoPix           FormaPagamento = "pix"
+	PagamentoDinheiro      FormaPagamento = "dinheiro"
+	PagamentoCartaoCredito FormaPagamento = "cartao_credito"
+	PagamentoCartaoDebito  FormaPagamento = "cartao_debito"
 )
 
-type TransactionCategory string
+type StatusAgendamento string
 
 const (
-	CategoryCorte        TransactionCategory = "CORTE"
-	CategoryBarba        TransactionCategory = "BARBA"
-	CategoryCombo        TransactionCategory = "COMBO"
-	CategoryProduto      TransactionCategory = "PRODUTO"
-	CategoryInsumo       TransactionCategory = "INSUMO"
-	CategoryDespesaGeral TransactionCategory = "DESPESA_GERAL"
-	CategorySangria      TransactionCategory = "SANGRIA"
+	StatusAgendado  StatusAgendamento = "agendado"
+	StatusConcluido StatusAgendamento = "concluido"
+	StatusCancelado StatusAgendamento = "cancelado"
 )
 
-type User struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	PIN           string    `json:"pin,omitempty"` // Ocultado nas respostas públicas quando necessário
-	Role          UserRole  `json:"role"`
-	StationNumber int       `json:"stationNumber"`
-	Active        bool      `json:"active"`
-	CreatedAt     time.Time `json:"createdAt"`
+type UrgenciaMaterial string
+
+const (
+	UrgenciaBaixa UrgenciaMaterial = "baixa"
+	UrgenciaMedia UrgenciaMaterial = "media"
+	UrgenciaAlta  UrgenciaMaterial = "alta"
+)
+
+type StatusMaterial string
+
+const (
+	StatusPendente StatusMaterial = "pendente"
+	StatusComprado StatusMaterial = "comprado"
+)
+
+// Modelos das Tabelas do Neon
+
+type Usuario struct {
+	ID       int64        `json:"id"`
+	Nome     string       `json:"nome"`
+	PIN      string       `json:"pin,omitempty"`
+	Papel    PapelUsuario `json:"papel"`
+	CriadoEm time.Time    `json:"criado_em"`
 }
 
-type Transaction struct {
-	ID            string              `json:"id"`
-	Type          TransactionType     `json:"type"`
-	Category      TransactionCategory `json:"category"`
-	Description   string              `json:"description"`
-	Amount        float64             `json:"amount"`
-	PaymentMethod PaymentMethod       `json:"paymentMethod"`
-	BarberID      string              `json:"barberId,omitempty"`
-	BarberName    string              `json:"barberName"`
-	Timestamp     string              `json:"timestamp"`
-	CreatedAt     time.Time           `json:"createdAt"`
+type MovimentacaoCaixa struct {
+	ID             int64            `json:"id"`
+	BarbeiroID     *int64           `json:"barbeiro_id,omitempty"`
+	BarbeiroNome   string           `json:"barbeiro_nome,omitempty"`
+	Tipo           TipoMovimentacao `json:"tipo"`
+	Descricao      string           `json:"descricao"`
+	Valor          float64          `json:"valor"`
+	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
+	CriadoEm       time.Time        `json:"criado_em"`
 }
 
-type AppointmentStatus string
-
-const (
-	StatusEmEspera  AppointmentStatus = "EM_ESPERA"
-	StatusNaCadeira AppointmentStatus = "NA_CADEIRA"
-	StatusConcluido AppointmentStatus = "CONCLUIDO"
-	StatusCancelado AppointmentStatus = "CANCELADO"
-)
-
-type Appointment struct {
-	ID         string            `json:"id"`
-	ClientName string            `json:"clientName"`
-	Service    string            `json:"service"`
-	Time       string            `json:"time"`
-	BarberID   string            `json:"barberId"`
-	BarberName string            `json:"barberName"`
-	Amount     float64           `json:"amount"`
-	Status     AppointmentStatus `json:"status"`
+type Agendamento struct {
+	ID           int64             `json:"id"`
+	BarbeiroID   int64             `json:"barbeiro_id"`
+	BarbeiroNome string            `json:"barbeiro_nome,omitempty"`
+	ClienteNome  string            `json:"cliente_nome"`
+	Servico      string            `json:"servico"`
+	DataHora     time.Time         `json:"data_hora"`
+	HoraFormat   string            `json:"hora_formatada,omitempty"`
+	Status       StatusAgendamento `json:"status"`
+	CriadoEm     time.Time         `json:"criado_em"`
 }
 
-type MaterialUrgency string
-
-const (
-	UrgencyBaixa   MaterialUrgency = "BAIXA"
-	UrgencyMedia   MaterialUrgency = "MEDIA"
-	UrgencyAlta    MaterialUrgency = "ALTA"
-	UrgencyCritica MaterialUrgency = "CRITICA"
-)
-
-type MaterialStatus string
-
-const (
-	MaterialStatusPendente MaterialStatus = "PENDENTE"
-	MaterialStatusComprado MaterialStatus = "COMPRADO"
-	MaterialStatusEntregue MaterialStatus = "ENTREGUE"
-)
-
-type MaterialRequest struct {
-	ID          string          `json:"id"`
-	Item        string          `json:"item"`
-	Quantity    string          `json:"quantity"`
-	Urgency     MaterialUrgency `json:"urgency"`
-	Status      MaterialStatus  `json:"status"`
-	RequestedBy string          `json:"requestedBy"`
-	RequestedAt string          `json:"requestedAt"`
+type PedidoMaterial struct {
+	ID            int64            `json:"id"`
+	SolicitanteID *int64          `json:"solicitante_id,omitempty"`
+	Solicitante   string           `json:"solicitante_nome,omitempty"`
+	Item          string           `json:"item"`
+	Quantidade    int              `json:"quantidade"`
+	Urgencia      UrgenciaMaterial `json:"urgencia"`
+	Status        StatusMaterial   `json:"status"`
+	CriadoEm      time.Time        `json:"criado_em"`
 }
 
-type PaymentBreakdown struct {
-	PIX      float64 `json:"pix"`
-	Dinheiro float64 `json:"dinheiro"`
-	Cartao   float64 `json:"cartao"`
+// DTOs de Request / Response
+
+type LoginPINRequest struct {
+	PIN string `json:"pin"`
 }
 
-type DailySummary struct {
-	SaldoLiquido       float64          `json:"saldoLiquido"`
-	TotalEntradas      float64          `json:"totalEntradas"`
-	TotalSaidas        float64          `json:"totalSaidas"`
-	TotalAtendimentos  int              `json:"totalAtendimentos"`
-	PorFormaPagamento  PaymentBreakdown `json:"porFormaPagamento"`
+type AuthResponse struct {
+	ID    int64        `json:"id"`
+	Nome  string       `json:"nome"`
+	Papel PapelUsuario `json:"papel"`
+	Token string       `json:"token"`
+}
+
+type NovaMovimentacaoRequest struct {
+	BarbeiroID     *int64           `json:"barbeiro_id"`
+	Tipo           TipoMovimentacao `json:"tipo"`
+	Descricao      string           `json:"descricao"`
+	Valor          float64          `json:"valor"`
+	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
+}
+
+type NovoAgendamentoRequest struct {
+	BarbeiroID  int64     `json:"barbeiro_id"`
+	ClienteNome string    `json:"cliente_nome"`
+	Servico     string    `json:"servico"`
+	DataHora    time.Time `json:"data_hora"`
+}
+
+type NovoUsuarioRequest struct {
+	Nome  string       `json:"nome"`
+	PIN   string       `json:"pin"`
+	Papel PapelUsuario `json:"papel"`
+}
+
+type EditarUsuarioRequest struct {
+	Nome  string `json:"nome"`
+	PIN   string `json:"pin"`
+}
+
+type NovoPedidoMaterialRequest struct {
+	SolicitanteID *int64          `json:"solicitante_id"`
+	Item          string           `json:"item"`
+	Quantidade    int              `json:"quantidade"`
+	Urgencia      UrgenciaMaterial `json:"urgencia"`
+}
+
+type FormasPagamentoTotais struct {
+	Pix           float64 `json:"pix"`
+	Dinheiro      float64 `json:"dinheiro"`
+	CartaoCredito float64 `json:"cartao_credito"`
+	CartaoDebito  float64 `json:"cartao_debito"`
+}
+
+type ResumoCaixaResponse struct {
+	SaldoLiquido       float64               `json:"saldo_liquido"`
+	TotalEntradas      float64               `json:"total_entradas"`
+	TotalSaidas        float64               `json:"total_saidas"`
+	TotalMovimentacoes int                   `json:"total_movimentacoes"`
+	PorFormaPagamento  FormasPagamentoTotais `json:"por_forma_pagamento"`
+	Movimentacoes      []MovimentacaoCaixa   `json:"movimentacoes"`
 }

@@ -1,0 +1,365 @@
+import {
+  User,
+  DailySummary,
+  Transaction,
+  Appointment,
+  PaymentMethod,
+  TransactionType,
+  AdminUsuariosResponse,
+  MaterialRequest,
+  MaterialUrgency,
+} from "@/types";
+
+const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+export const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
+
+class ApiError extends Error {
+  constructor(public message: string, public status?: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE_URL}${endpoint}`;
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const errorMsg = data?.error || `Erro na requisição (${res.status})`;
+      throw new ApiError(errorMsg, res.status);
+    }
+
+    return data as T;
+  } catch (err: any) {
+    if (err instanceof ApiError) {
+      throw err;
+    }
+    throw new ApiError(
+      `Não foi possível conectar ao servidor backend (${API_BASE_URL}). Verifique sua conexão ou se a API está online no Fly.io.`,
+      503
+    );
+  }
+}
+
+export const api = {
+  // 1. Autenticação por PIN
+  async loginByPin(pin: string): Promise<User> {
+    const data = await request<{
+      id: number;
+      nome: string;
+      papel: "admin" | "barbeiro";
+      token: string;
+    }>("/api/auth/pin", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    });
+
+    return {
+      id: data.id,
+      name: data.nome,
+      role: data.papel,
+      token: data.token,
+    };
+  },
+
+  // 2. Controle de Caixa Diário
+  async getCaixaSummary(): Promise<DailySummary> {
+    const raw = await request<{
+      saldo_liquido: number;
+      total_entradas: number;
+      total_saidas: number;
+      total_movimentacoes: number;
+      por_forma_pagamento: {
+        pix: number;
+        dinheiro: number;
+        cartao_credito: number;
+        cartao_debito: number;
+      };
+      movimentacoes: Array<{
+        id: number;
+        barbeiro_id?: number | null;
+        barbeiro_nome?: string;
+        tipo: TransactionType;
+        descricao: string;
+        valor: number;
+        forma_pagamento: PaymentMethod;
+        criado_em: string;
+      }>;
+    }>("/api/caixa", { method: "GET" });
+
+    const movimentacoes: Transaction[] = (raw.movimentacoes || []).map((m) => {
+      const d = new Date(m.criado_em);
+      const timeStr = !isNaN(d.getTime())
+        ? `${d.getHours().toString().padStart(2, "0")}:${d
+            .getMinutes()
+            .toString()
+            .padStart(2, "0")}`
+        : "Hoje";
+
+      return {
+        id: m.id,
+        type: m.tipo,
+        description: m.descricao,
+        amount: Number(m.valor),
+        paymentMethod: m.forma_pagamento,
+        barberId: m.barbeiro_id,
+        barberName: m.barbeiro_nome || "Geral/Caixa",
+        timestamp: timeStr,
+        createdAt: m.criado_em,
+      };
+    });
+
+    return {
+      saldoLiquido: Number(raw.saldo_liquido || 0),
+      totalEntradas: Number(raw.total_entradas || 0),
+      totalSaidas: Number(raw.total_saidas || 0),
+      totalMovimentacoes: Number(raw.total_movimentacoes || 0),
+      porFormaPagamento: {
+        pix: Number(raw.por_forma_pagamento?.pix || 0),
+        dinheiro: Number(raw.por_forma_pagamento?.dinheiro || 0),
+        cartaoCredito: Number(raw.por_forma_pagamento?.cartao_credito || 0),
+        cartaoDebito: Number(raw.por_forma_pagamento?.cartao_debito || 0),
+      },
+      movimentacoes,
+    };
+  },
+
+  async criarMovimentacao(payload: {
+    tipo: TransactionType;
+    descricao: string;
+    valor: number;
+    forma_pagamento: PaymentMethod;
+    barbeiro_id?: number | null;
+  }): Promise<Transaction> {
+    const raw = await request<{
+      id: number;
+      barbeiro_id?: number;
+      tipo: TransactionType;
+      descricao: string;
+      valor: number;
+      forma_pagamento: PaymentMethod;
+      criado_em: string;
+    }>("/api/caixa", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    const d = new Date(raw.criado_em);
+    const timeStr = !isNaN(d.getTime())
+      ? `${d.getHours().toString().padStart(2, "0")}:${d
+          .getMinutes()
+          .toString()
+          .padStart(2, "0")}`
+      : "Agora";
+
+    return {
+      id: raw.id,
+      type: raw.tipo,
+      description: raw.descricao,
+      amount: Number(raw.valor),
+      paymentMethod: raw.forma_pagamento,
+      barberId: raw.barbeiro_id,
+      barberName: "Registrado",
+      timestamp: timeStr,
+      createdAt: raw.criado_em,
+    };
+  },
+
+  // 3. Agendamentos
+  async getAgendamentos(barbeiroId?: number | string): Promise<Appointment[]> {
+    const endpoint = barbeiroId
+      ? `/api/agendamentos?barbeiro_id=${barbeiroId}`
+      : "/api/agendamentos";
+
+    const raw = await request<
+      Array<{
+        id: number;
+        barbeiro_id: number;
+        barbeiro_nome?: string;
+        cliente_nome: string;
+        servico: string;
+        data_hora: string;
+        hora_formatada?: string;
+        status: Appointment["status"];
+      }>
+    >(endpoint, { method: "GET" });
+
+    return (raw || []).map((a) => {
+      let timeStr = a.hora_formatada;
+      if (!timeStr) {
+        const d = new Date(a.data_hora);
+        timeStr = !isNaN(d.getTime())
+          ? `${d.getHours().toString().padStart(2, "0")}:${d
+              .getMinutes()
+              .toString()
+              .padStart(2, "0")}`
+          : "12:00";
+      }
+
+      return {
+        id: a.id,
+        clientName: a.cliente_nome,
+        service: a.servico,
+        time: timeStr,
+        barberId: a.barbeiro_id,
+        barberName: a.barbeiro_nome || "Barbeiro",
+        status: a.status,
+      };
+    });
+  },
+
+  async criarAgendamento(payload: {
+    barbeiro_id: number;
+    cliente_nome: string;
+    servico: string;
+    data_hora: string;
+  }): Promise<Appointment> {
+    const raw = await request<{
+      id: number;
+      barbeiro_id: number;
+      cliente_nome: string;
+      servico: string;
+      data_hora: string;
+      hora_formatada?: string;
+      status: Appointment["status"];
+    }>("/api/agendamentos", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      id: raw.id,
+      clientName: raw.cliente_nome,
+      service: raw.servico,
+      time: raw.hora_formatada || "12:00",
+      barberId: raw.barbeiro_id,
+      barberName: "Barbeiro",
+      status: raw.status,
+    };
+  },
+
+  // 4. Pedidos de Materiais (Neon: pedidos_materiais)
+  async getMateriais(): Promise<MaterialRequest[]> {
+    const raw = await request<
+      Array<{
+        id: number;
+        solicitante_id?: number;
+        solicitante_nome?: string;
+        item: string;
+        quantidade: number;
+        urgencia: MaterialUrgency;
+        status: MaterialRequest["status"];
+        criado_em: string;
+      }>
+    >("/api/materiais", { method: "GET" });
+
+    return (raw || []).map((p) => {
+      const d = new Date(p.criado_em);
+      const timeStr = !isNaN(d.getTime())
+        ? `${d.getHours().toString().padStart(2, "0")}:${d
+            .getMinutes()
+            .toString()
+            .padStart(2, "0")}`
+        : "Hoje";
+
+      return {
+        id: p.id,
+        item: p.item,
+        quantity: p.quantidade,
+        urgency: p.urgencia,
+        status: p.status,
+        requestedBy: p.solicitante_nome || "Bancada",
+        requestedAt: timeStr,
+      };
+    });
+  },
+
+  async criarMaterial(payload: {
+    solicitante_id?: number | null;
+    item: string;
+    quantidade: number;
+    urgencia: MaterialUrgency;
+  }): Promise<MaterialRequest> {
+    const raw = await request<{
+      id: number;
+      solicitante_id?: number;
+      item: string;
+      quantidade: number;
+      urgencia: MaterialUrgency;
+      status: MaterialRequest["status"];
+      criado_em: string;
+    }>("/api/materiais", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      id: raw.id,
+      item: raw.item,
+      quantity: raw.quantidade,
+      urgency: raw.urgencia,
+      status: raw.status,
+      requestedBy: "Bancada",
+      requestedAt: "Agora",
+    };
+  },
+
+  // 5. Gestão de Equipe (CEO)
+  async getUsuariosAdmin(): Promise<AdminUsuariosResponse> {
+    return request<AdminUsuariosResponse>("/api/admin/usuarios", {
+      method: "GET",
+    });
+  },
+
+  async criarUsuarioAdmin(payload: {
+    nome: string;
+    pin: string;
+    papel: "admin" | "barbeiro";
+  }): Promise<User> {
+    const raw = await request<{
+      id: number;
+      nome: string;
+      pin: string;
+      papel: "admin" | "barbeiro";
+    }>("/api/admin/usuarios", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      id: raw.id,
+      name: raw.nome,
+      pin: raw.pin,
+      role: raw.papel,
+    };
+  },
+
+  // Remover barbeiro da equipe (apenas CEO, admins são protegidos pelo backend)
+  async deletarUsuarioAdmin(id: number): Promise<{ message: string }> {
+    return request<{ message: string }>(`/api/admin/usuarios/${id}`, {
+      method: "DELETE",
+    });
+  },
+
+  // Editar nome e PIN de um barbeiro (PUT /api/admin/usuarios/{id})
+  async editarUsuarioAdmin(
+    id: number,
+    payload: { nome: string; pin: string }
+  ): Promise<{ id: number; nome: string; pin: string; papel: string }> {
+    return request<{ id: number; nome: string; pin: string; papel: string }>(
+      `/api/admin/usuarios/${id}`,
+      { method: "PUT", body: JSON.stringify(payload) }
+    );
+  },
+};

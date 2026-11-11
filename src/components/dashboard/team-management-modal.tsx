@@ -1,46 +1,83 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { User, UserRole } from "@/types";
 import {
   Users,
   UserPlus,
   ShieldAlert,
   Trash2,
-  Edit2,
+  Pencil,
+  Check,
   KeyRound,
-  Scissors,
-  CheckCircle2,
   X,
   AlertCircle,
+  Loader2,
 } from "lucide-react";
 
 interface TeamManagementModalProps {
   isOpen: boolean;
   onClose: () => void;
   users: User[];
-  onAddUser: (user: Omit<User, "id">) => { success: boolean; error?: string };
-  onUpdateUser: (id: string, updates: Partial<User>) => void;
-  onDeleteUser: (id: string) => { success: boolean; error?: string };
+  initialEditUserId?: number | null;
+  onAddUser: (userData: {
+    nome: string;
+    pin: string;
+    papel: UserRole;
+  }) => Promise<{ success: boolean; error?: string }>;
+  onDeleteUser: (id: number) => Promise<{ success: boolean; error?: string }>;
+  onEditUser: (
+    id: number,
+    data: { nome: string; pin: string }
+  ) => Promise<{ success: boolean; error?: string }>;
+  onRefresh: () => void;
 }
 
 export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
   isOpen,
   onClose,
   users,
+  initialEditUserId = null,
   onAddUser,
-  onUpdateUser,
   onDeleteUser,
+  onEditUser,
+  onRefresh,
 }) => {
-  const [isEditing, setIsEditing] = useState<boolean>(false);
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
-
-  // Form states
+  // ── Estados do formulário de criação ──────────────────────────────────
   const [name, setName] = useState<string>("");
   const [pin, setPin] = useState<string>("");
-  const [role, setRole] = useState<UserRole>("BARBEIRO");
-  const [stationNumber, setStationNumber] = useState<number>(users.length + 1);
+  const [role, setRole] = useState<UserRole>("barbeiro");
   const [formError, setFormError] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // ── Estados de exclusão ───────────────────────────────────────────────
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string>("");
+
+  // ── Estados de edição ─────────────────────────────────────────────────
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState<string>("");
+  const [editPin, setEditPin] = useState<string>("");
+  const [editError, setEditError] = useState<string>("");
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen && initialEditUserId) {
+      const target = users.find((u) => Number(u.id) === Number(initialEditUserId));
+      if (target && target.role !== "admin") {
+        setEditingId(Number(target.id));
+        setEditName(target.name);
+        setEditPin(target.pin || "");
+        setEditError("");
+      }
+    } else if (!isOpen) {
+      setEditingId(null);
+      setEditName("");
+      setEditPin("");
+      setEditError("");
+      setDeleteError("");
+    }
+  }, [isOpen, initialEditUserId, users]);
 
   if (!isOpen) return null;
 
@@ -50,24 +87,26 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
   const resetForm = () => {
     setName("");
     setPin("");
-    setRole("BARBEIRO");
-    setStationNumber(users.length + 1);
+    setRole("barbeiro");
     setFormError("");
-    setIsEditing(false);
-    setEditingUserId(null);
+    setIsSubmitting(false);
   };
 
-  const handleStartEdit = (user: User) => {
-    setIsEditing(true);
-    setEditingUserId(user.id);
-    setName(user.name);
-    setPin(user.pin);
-    setRole(user.role);
-    setStationNumber(user.stationNumber || 1);
-    setFormError("");
+  const startEdit = (u: User) => {
+    setEditingId(Number(u.id));
+    setEditName(u.name);
+    setEditPin(u.pin || "");
+    setEditError("");
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditName("");
+    setEditPin("");
+    setEditError("");
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
 
@@ -75,58 +114,89 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
       setFormError("Informe o nome do colaborador.");
       return;
     }
-
     if (!/^\d{4}$/.test(pin)) {
       setFormError("O PIN deve conter exatamente 4 números.");
       return;
     }
-
-    // Checar se o PIN já está sendo usado por outro usuário
-    const pinConflict = users.find(
-      (u) => u.pin === pin && (!isEditing || u.id !== editingUserId)
-    );
-    if (pinConflict) {
-      setFormError(`Este PIN já está cadastrado para ${pinConflict.name}.`);
+    if (isFull) {
+      setFormError("Limite estrito de 5 colaboradores atingido no banco de dados.");
       return;
     }
 
-    if (isEditing && editingUserId) {
-      onUpdateUser(editingUserId, {
-        name,
-        pin,
-        role,
-        stationNumber,
-      });
-      resetForm();
-    } else {
-      const res = onAddUser({
-        name,
-        pin,
-        role,
-        stationNumber,
-        active: true,
-      });
-
+    setIsSubmitting(true);
+    try {
+      const res = await onAddUser({ nome: name, pin, papel: role });
       if (!res.success) {
         setFormError(res.error || "Erro ao adicionar colaborador.");
       } else {
         resetForm();
+        onRefresh();
       }
+    } catch (err: any) {
+      setFormError(err.message || "Erro de conexão ao criar colaborador.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleDelete = (id: string, userName: string) => {
-    if (confirm(`Tem certeza que deseja remover ${userName} do sistema?`)) {
-      const res = onDeleteUser(id);
+  const handleDelete = async (u: User) => {
+    const userId = Number(u.id);
+    setDeleteError("");
+    if (
+      !window.confirm(
+        `Remover "${u.name}" da equipe?\n\nEsta ação não pode ser desfeita.`
+      )
+    )
+      return;
+
+    setDeletingId(userId);
+    try {
+      const res = await onDeleteUser(userId);
       if (!res.success) {
-        alert(res.error || "Não foi possível remover.");
+        setDeleteError(res.error || "Erro ao remover colaborador.");
+      } else {
+        onRefresh();
       }
+    } catch (err: any) {
+      setDeleteError(err.message || "Erro de conexão ao remover colaborador.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleSaveEdit = async (u: User) => {
+    const userId = Number(u.id);
+    setEditError("");
+
+    if (!editName.trim()) {
+      setEditError("O nome não pode ser vazio.");
+      return;
+    }
+    if (!/^\d{4}$/.test(editPin)) {
+      setEditError("O PIN deve conter exatamente 4 números.");
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const res = await onEditUser(userId, { nome: editName.trim(), pin: editPin });
+      if (!res.success) {
+        setEditError(res.error || "Erro ao salvar alterações.");
+      } else {
+        cancelEdit();
+        onRefresh();
+      }
+    } catch (err: any) {
+      setEditError(err.message || "Erro de conexão ao salvar edição.");
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md overflow-y-auto">
       <div className="w-full max-w-2xl rounded-2xl bg-[#0c1220] border border-white/15 p-5 sm:p-6 shadow-2xl my-auto text-slate-100">
+
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div className="flex items-center gap-3">
@@ -135,28 +205,25 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                Gestão da Equipe & Cadeiras
+                Gestão da Equipe &amp; Cadeiras
                 <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-purple-500/15 text-purple-300 border border-purple-500/30">
                   {users.length} / {MAX_USERS} Vagas
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Acesso restrito do CEO. Limite estrito de até 5 colaboradores.
+                Acesso restrito do CEO. Limite estrito de 5 colaboradores (Neon PostgreSQL).
               </p>
             </div>
           </div>
           <button
-            onClick={() => {
-              resetForm();
-              onClose();
-            }}
+            onClick={() => { resetForm(); cancelEdit(); onClose(); }}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Indicador Visual de Slots de Membros */}
+        {/* Indicador Visual de Slots */}
         <div className="my-4 p-3.5 rounded-xl bg-slate-950/60 border border-white/5">
           <div className="flex items-center justify-between text-xs mb-2 text-slate-400">
             <span>Ocupação das Cadeiras da Barbearia</span>
@@ -166,7 +233,6 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
                 : "Capacidade máxima atingida"}
             </span>
           </div>
-
           <div className="grid grid-cols-5 gap-2">
             {[1, 2, 3, 4, 5].map((slotNumber) => {
               const assignedUser = users[slotNumber - 1];
@@ -185,16 +251,15 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
                   {assignedUser ? (
                     <>
                       <div className="text-xs font-bold truncate max-w-full mt-0.5">
-                        {assignedUser.role === "CEO" ? "👑" : "💈"} {assignedUser.name.split(" ")[0]}
+                        {assignedUser.role === "admin" ? "👑" : "💈"}{" "}
+                        {assignedUser.name.split(" ")[0]}
                       </div>
                       <span className="text-[9px] text-amber-400/90 font-mono">
-                        PIN: {assignedUser.pin}
+                        PIN: {assignedUser.pin || "****"}
                       </span>
                     </>
                   ) : (
-                    <span className="text-[10px] italic text-slate-600 mt-1">
-                      Disponível
-                    </span>
+                    <span className="text-[10px] italic text-slate-600 mt-1">Livre</span>
                   )}
                 </div>
               );
@@ -202,35 +267,16 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
           </div>
         </div>
 
-        {/* Formulário: Adicionar ou Editar Colaborador */}
+        {/* Formulário: Cadastrar Novo Colaborador */}
         <form
           onSubmit={handleSubmit}
           className="p-4 rounded-xl bg-slate-900/70 border border-white/10 mb-4"
         >
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-              {isEditing ? (
-                <>
-                  <Edit2 className="w-3.5 h-3.5 text-amber-400" />
-                  Editando Colaborador: {name}
-                </>
-              ) : (
-                <>
-                  <UserPlus className="w-3.5 h-3.5 text-purple-400" />
-                  Cadastrar Novo Colaborador
-                </>
-              )}
+              <UserPlus className="w-3.5 h-3.5 text-purple-400" />
+              Cadastrar Novo Colaborador no Neon
             </h3>
-
-            {isEditing && (
-              <button
-                type="button"
-                onClick={resetForm}
-                className="text-xs text-slate-400 hover:text-white"
-              >
-                Cancelar Edição
-              </button>
-            )}
           </div>
 
           {formError && (
@@ -247,10 +293,10 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Matheus Cortes"
+                placeholder="Ex: Matheus Silva"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                disabled={isFull && !isEditing}
+                disabled={isFull || isSubmitting}
                 className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/10 text-sm text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
               />
             </div>
@@ -266,7 +312,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
                   placeholder="Ex: 5555"
                   value={pin}
                   onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-                  disabled={isFull && !isEditing}
+                  disabled={isFull || isSubmitting}
                   className="w-full h-10 px-3 pl-9 rounded-xl bg-slate-950 border border-white/10 text-sm font-mono tracking-widest text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
                 />
                 <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
@@ -280,118 +326,204 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
               <select
                 value={role}
                 onChange={(e) => setRole(e.target.value as UserRole)}
-                disabled={isFull && !isEditing}
+                disabled={isFull || isSubmitting}
                 className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/10 text-sm text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
               >
-                <option value="BARBEIRO">Barbeiro (Acesso Bancada & Agenda)</option>
-                <option value="CEO">CEO / Administrador (Acesso Geral)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Cadeira / Estação
-              </label>
-              <select
-                value={stationNumber}
-                onChange={(e) => setStationNumber(Number(e.target.value))}
-                disabled={isFull && !isEditing}
-                className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/10 text-sm text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
-              >
-                <option value={1}>Cadeira 1</option>
-                <option value={2}>Cadeira 2</option>
-                <option value={3}>Cadeira 3</option>
-                <option value={4}>Cadeira 4</option>
-                <option value={5}>Cadeira 5</option>
+                <option value="barbeiro">Barbeiro (Bancada &amp; Agenda)</option>
+                <option value="admin">Administrador (CEO - Acesso Geral)</option>
               </select>
             </div>
           </div>
 
           <button
             type="submit"
-            disabled={isFull && !isEditing}
+            disabled={isFull || isSubmitting}
             className={`w-full mt-3 h-10 rounded-xl font-bold text-xs sm:text-sm text-white transition-all flex items-center justify-center gap-2 ${
-              isFull && !isEditing
+              isFull
                 ? "bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5"
-                : isEditing
-                ? "bg-amber-600 hover:bg-amber-500 shadow-glow"
-                : "bg-purple-600 hover:bg-purple-500"
+                : "bg-purple-600 hover:bg-purple-500 shadow-md"
             }`}
           >
-            {isEditing ? (
-              <>
-                <CheckCircle2 className="w-4 h-4" /> Salvar Alterações
-              </>
+            {isSubmitting ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Salvando no Neon...</>
             ) : isFull ? (
-              <>
-                <ShieldAlert className="w-4 h-4" /> Limite de 5 Membros Atingido
-              </>
+              <><ShieldAlert className="w-4 h-4" /> Limite de 5 Membros Atingido</>
             ) : (
-              <>
-                <UserPlus className="w-4 h-4" /> Adicionar à Equipe
-              </>
+              <><UserPlus className="w-4 h-4" /> Adicionar à Equipe (API)</>
             )}
           </button>
         </form>
 
-        {/* Lista de Colaboradores Atuais */}
-        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+        {/* Lista de Colaboradores */}
+        <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-            Membros Cadastrados ({users.length}):
+            Colaboradores Ativos no Neon ({users.length}):
           </p>
 
-          {users.map((u) => (
-            <div
-              key={u.id}
-              className="p-3 rounded-xl bg-slate-950/70 border border-white/5 flex items-center justify-between"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-slate-900 border border-white/10 flex items-center justify-center font-bold text-amber-400 text-sm">
-                  {u.role === "CEO" ? "👑" : "💈"}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-white">{u.name}</span>
-                    <span
-                      className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold uppercase ${
-                        u.role === "CEO"
-                          ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                          : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
-                      }`}
-                    >
-                      {u.role}
-                    </span>
+          {/* Erro de exclusão */}
+          {deleteError && (
+            <div className="p-2.5 mb-2 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {deleteError}
+            </div>
+          )}
+
+          {users.map((u) => {
+            const isEditing = editingId === u.id;
+            const isAdmin = u.role === "admin";
+
+            return (
+              <div
+                key={u.id}
+                className={`rounded-xl border transition-all ${
+                  isEditing
+                    ? "bg-slate-900 border-purple-500/40 p-3"
+                    : "bg-slate-950/70 border-white/5 p-3"
+                }`}
+              >
+                {isEditing ? (
+                  /* ── Modo Edição ──────────────────────────────────── */
+                  <div className="space-y-2.5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Pencil className="w-3.5 h-3.5 text-purple-400" />
+                      <span className="text-xs font-bold text-purple-300 uppercase tracking-wider">
+                        Editando barbeiro
+                      </span>
+                    </div>
+
+                    {editError && (
+                      <div className="p-2 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                        {editError}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-slate-400 mb-1">
+                          Nome
+                        </label>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          disabled={isSavingEdit}
+                          autoFocus
+                          className="w-full h-9 px-3 rounded-lg bg-slate-950 border border-purple-500/30 text-sm text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-semibold text-slate-400 mb-1">
+                          PIN (4 dígitos)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            maxLength={4}
+                            value={editPin}
+                            onChange={(e) =>
+                              setEditPin(e.target.value.replace(/\D/g, ""))
+                            }
+                            disabled={isSavingEdit}
+                            className="w-full h-9 px-3 pl-8 rounded-lg bg-slate-950 border border-purple-500/30 text-sm font-mono tracking-widest text-white focus:outline-none focus:border-purple-400 disabled:opacity-50"
+                          />
+                          <KeyRound className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        disabled={isSavingEdit}
+                        className="h-8 px-3 rounded-lg bg-slate-800 border border-white/10 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition-all disabled:opacity-50"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveEdit(u)}
+                        disabled={isSavingEdit}
+                        className="h-8 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                      >
+                        {isSavingEdit ? (
+                          <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Salvando...</>
+                        ) : (
+                          <><Check className="w-3.5 h-3.5" /> Salvar</>
+                        )}
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-400">
-                    Cadeira #{u.stationNumber || 1} •{" "}
-                    <span className="text-slate-300 font-mono">PIN: {u.pin}</span>
-                  </p>
-                </div>
-              </div>
+                ) : (
+                  /* ── Modo Visualização ───────────────────────────── */
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-slate-900 border border-white/10 flex items-center justify-center font-bold text-amber-400 text-sm">
+                        {isAdmin ? "👑" : "💈"}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">{u.name}</span>
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold uppercase ${
+                              isAdmin
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                            }`}
+                          >
+                            {isAdmin ? "CEO" : "BARBEIRO"}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                          <span className="text-slate-300 font-mono">
+                            PIN: {u.pin || "****"}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleStartEdit(u)}
-                  title="Editar dados ou PIN"
-                  className="p-2 rounded-lg bg-slate-900 text-slate-300 hover:text-amber-400 hover:bg-slate-800 transition-colors"
-                >
-                  <Edit2 className="w-4 h-4" />
-                </button>
+                    {/* Ações — apenas barbeiros */}
+                    <div className="flex items-center gap-1.5">
+                      {!isAdmin ? (
+                        <>
+                          {/* Botão Editar */}
+                          <button
+                            type="button"
+                            onClick={() => startEdit(u)}
+                            disabled={deletingId === u.id || editingId !== null}
+                            title="Editar nome e PIN"
+                            className="p-2 rounded-xl bg-purple-950/30 border border-purple-500/20 text-purple-400 hover:bg-purple-900/50 hover:border-purple-500/50 hover:text-purple-300 active:scale-95 transition-all disabled:opacity-40"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
 
-                {u.role !== "CEO" && (
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(u.id, u.name)}
-                    title="Remover barbeiro"
-                    className="p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-rose-400 hover:bg-rose-950/20 transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                          {/* Botão Excluir */}
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(u)}
+                            disabled={deletingId === u.id || editingId !== null}
+                            title="Remover barbeiro da equipe"
+                            className="p-2 rounded-xl bg-rose-950/30 border border-rose-500/20 text-rose-400 hover:bg-rose-900/50 hover:border-rose-500/50 hover:text-rose-300 active:scale-95 transition-all disabled:opacity-40"
+                          >
+                            {deletingId === u.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium">
+                          Protegido
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

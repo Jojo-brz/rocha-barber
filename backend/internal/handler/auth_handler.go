@@ -2,66 +2,75 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/barbearia-rocha/backend/internal/database"
 	"github.com/barbearia-rocha/backend/internal/domain"
-	"github.com/barbearia-rocha/backend/internal/repository"
+	"github.com/jackc/pgx/v5"
 )
 
 type AuthHandler struct {
-	repo *repository.Repository
+	db *database.DB
 }
 
-func NewAuthHandler(repo *repository.Repository) *AuthHandler {
-	return &AuthHandler{repo: repo}
+func NewAuthHandler(db *database.DB) *AuthHandler {
+	return &AuthHandler{db: db}
 }
 
-type PINLoginRequest struct {
-	PIN string `json:"pin"`
-}
+// LoginPIN valida o PIN enviado pelo usuário contra a tabela usuarios do Neon
+// POST /api/auth/pin
+func (h *AuthHandler) LoginPIN(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
-type AuthResponse struct {
-	User  *domain.User `json:"user"`
-	Token string       `json:"token"`
-}
-
-// POST /api/v1/auth/pin
-func (h *AuthHandler) LoginByPIN(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req PINLoginRequest
+	var req domain.LoginPINRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Payload JSON inválido"})
 		return
 	}
 
-	if len(req.PIN) != 4 {
-		w.Header().Set("Content-Type", "application/json")
+	if len(req.PIN) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O PIN deve conter exatamente 4 dígitos numéricos"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "O PIN numérico deve ser informado"})
 		return
 	}
 
-	user, err := h.repo.AuthenticateByPIN(req.PIN)
+	query := `
+		SELECT id, nome, papel 
+		FROM usuarios 
+		WHERE pin = $1
+		LIMIT 1;
+	`
+
+	var u domain.Usuario
+	err := h.db.Pool.QueryRow(r.Context(), query, req.PIN).Scan(
+		&u.ID,
+		&u.Nome,
+		&u.Papel,
+	)
+
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "PIN não reconhecido ou colaborador inativo"})
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "PIN incorreto ou usuário não cadastrado"})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar usuário no Neon: " + err.Error()})
 		return
 	}
 
-	// Token de sessão assinado (simulado para integração com frontend)
-	fakeJWT := "bearer_rocha_" + user.ID + "_" + string(user.Role)
+	token := fmt.Sprintf("rocha_auth_%d_%s", u.ID, u.Papel)
 
-	w.Header().Set("Content-Type", "application/json")
+	resp := domain.AuthResponse{
+		ID:    u.ID,
+		Nome:  u.Nome,
+		Papel: u.Papel,
+		Token: token,
+	}
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(AuthResponse{
-		User:  user,
-		Token: fakeJWT,
-	})
+	json.NewEncoder(w).Encode(resp)
 }

@@ -1,6 +1,6 @@
 # 💈 Barbearia Rocha - Sistema de Bancada & Gestão Interna
 
-Sistema web interno de alta performance desenvolvido com **Next.js 14+ (App Router)** e **Tailwind CSS** no Frontend e **Golang** no Backend.
+Sistema web interno full-stack desenvolvido com **Next.js 14+ (App Router)** e **Tailwind CSS** no Frontend e **Golang (Chi + pgx/v5)** no Backend conectado ao **PostgreSQL do Neon**.
 
 ---
 
@@ -17,15 +17,15 @@ Sistema web interno de alta performance desenvolvido com **Next.js 14+ (App Rout
 
 ## 👥 Perfis de Acesso & Regras de Negócio
 1. **Autenticação Rápida por PIN de 4 dígitos:**
-   - Tela de Keypad estilo cofre para login instantâneo na bancada.
-   - Suporte a toque e teclado físico numérico.
+   - Tela de Keypad estilo cofre (`POST /api/auth/pin`) para login instantâneo na bancada.
+   - Suporte a toque e teclado físico numérico com sessão persistente (`sessionStorage`).
 2. **CEO / Administrador:**
-   - Acesso irrestrito a todos os dados financeiros e saldo consolidado.
-   - Visão de todas as cadeiras e extrato geral.
-   - **Painel de Gestão de Equipe com trava estrita de até 5 colaboradores no total**.
+   - Acesso irrestrito ao faturamento diário consolidado (`GET /api/caixa`).
+   - Visão de todas as cadeiras e extrato geral em tempo real.
+   - **Painel de Gestão de Equipe com trava estrita de até 5 colaboradores no total (`POST /api/admin/usuarios`)**.
 3. **Barbeiro:**
    - Acesso simplificado via PIN pessoal.
-   - Foco na sua própria bancada: visualização de sua agenda, chamadas de clientes (`Em Espera` ➔ `Na Cadeira` ➔ `Concluído`) e lançamento rápido de serviços/produtos.
+   - Foco na sua própria bancada: visualização de sua agenda (`GET /api/agendamentos?barbeiro_id=X`), chamadas de clientes e lançamento rápido de serviços/produtos (`POST /api/caixa`).
    - Canal de solicitação de insumos (lâminas, pomadas, toalhas).
 
 ---
@@ -38,34 +38,34 @@ barbearia-rocha/
 │   ├── app/
 │   │   ├── globals.css                   # Reset e variáveis do Dark Mode
 │   │   ├── layout.tsx                    # Viewport otimizado para celular/tablet
-│   │   └── page.tsx                      # Estado raiz: PIN Keypad <-> Dashboard
+│   │   └── page.tsx                      # Estado raiz e restauração de sessão
 │   ├── components/
 │   │   ├── auth/
-│   │   │   └── pin-login.tsx             # Keypad numérico com haptic visual
+│   │   │   └── pin-login.tsx             # Keypad conectado ao endpoint /api/auth/pin
 │   │   └── dashboard/
-│   │       ├── dashboard-caixa.tsx       # Dashboard consolidado (Caixa, Agenda, Insumos)
-│   │       └── team-management-modal.tsx # Gestão da Equipe (CEO: Trava estrita de 5)
-│   ├── data/
-│   │   └── mock-data.ts                  # Mock inicial com 4/5 vagas ocupadas
+│   │       ├── dashboard-caixa.tsx       # Dashboard com dados reais de Caixa e Agenda
+│   │       └── team-management-modal.tsx # Gestão da Equipe (CEO: Trava estrita de 5 no Neon)
+│   ├── services/
+│   │   └── api.ts                        # Camada de comunicação com a API Golang
 │   └── types/
 │       └── index.ts                      # Tipagens completas do domínio
 ├── backend/                              # API Backend em Golang
 │   ├── cmd/
 │   │   └── api/
-│   │       └── main.go                   # Ponto de entrada do servidor HTTP (:8080)
+│   │       └── main.go                   # Servidor HTTP (:8080) com Chi, CORS e logs
 │   ├── internal/
+│   │   ├── database/
+│   │   │   └── db.go                     # Pool pgx, migrações DDL e seed inicial no Neon
 │   │   ├── domain/
-│   │   │   └── models.go                 # Modelos de dados e erros de negócio
-│   │   ├── repository/
-│   │   │   └── memory_repo.go            # Repositório com trava de 5 membros e concorrência
-│   │   ├── middleware/
-│   │   │   └── cors.go                   # CORS e Logger
+│   │   │   └── models.go                 # Modelos de dados e DTOs
 │   │   └── handler/
-│   │       ├── auth_handler.go           # Login por PIN (POST /api/v1/auth/pin)
-│   │       ├── caixa_handler.go          # Fluxo de Caixa (GET/POST /api/v1/caixa/...)
-│   │       ├── team_handler.go           # Gestão de Equipe (GET/POST/PUT/DELETE /api/v1/team/...)
-│   │       └── agenda_handler.go         # Agenda e Insumos (/api/v1/agenda, /api/v1/materiais)
+│   │       ├── auth_handler.go           # POST /api/auth/pin
+│   │       ├── caixa_handler.go          # GET & POST /api/caixa
+│   │       ├── agendamento_handler.go    # GET & POST /api/agendamentos
+│   │       └── admin_handler.go          # GET & POST /api/admin/usuarios
+│   ├── .env.example
 │   └── go.mod
+├── .env.local                            # NEXT_PUBLIC_API_URL=http://localhost:8080
 ├── tailwind.config.ts
 ├── tsconfig.json
 └── package.json
@@ -73,19 +73,22 @@ barbearia-rocha/
 
 ---
 
-## 🚀 Como Executar
+## 🚀 Como Executar o Sistema Completo
 
-### 1. Frontend (Next.js)
+### 1. Iniciar o Backend (Golang + Neon PostgreSQL)
+- **Produção (Fly.io):** A API já está hospedada e rodando ao vivo em `https://backend-snowy-tide-7292.fly.dev`
+- **Desenvolvimento Local:**
+```bash
+cd backend
+# Defina o DATABASE_URL no .env
+go run cmd/api/main.go
+# O servidor rodará em http://localhost:8080
+```
+
+### 2. Iniciar o Frontend (Next.js)
 ```bash
 # Na raiz do projeto:
 npm install
 npm run dev
-# Acesse: http://localhost:3000
-```
-
-### 2. Backend (Golang)
-```bash
-cd backend
-go run cmd/api/main.go
-# Servidor rodará em http://localhost:8080
+# Acesse no navegador ou no celular da bancada: http://localhost:3000
 ```

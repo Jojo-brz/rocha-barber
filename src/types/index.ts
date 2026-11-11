@@ -1,60 +1,49 @@
-export type UserRole = "CEO" | "BARBEIRO";
+export type UserRole = "admin" | "barbeiro";
 
 export interface User {
-  id: string;
+  id: number | string;
   name: string;
-  pin: string; // 4 dígitos
+  pin?: string;
   role: UserRole;
-  avatar?: string;
-  stationNumber?: number; // Cadeira 1, 2, 3
-  active: boolean;
+  stationNumber?: number;
+  token?: string;
 }
 
-export type PaymentMethod = "PIX" | "DINHEIRO" | "CARTAO";
+export type PaymentMethod = "pix" | "dinheiro" | "cartao_credito" | "cartao_debito";
 
-export type TransactionType = "ENTRADA" | "SAIDA";
-
-export type TransactionCategory = 
-  | "CORTE" 
-  | "BARBA" 
-  | "COMBO" 
-  | "PRODUTO" 
-  | "INSUMO" 
-  | "DESPESA_GERAL"
-  | "SANGRIA";
+export type TransactionType = "entrada" | "saida";
 
 export interface Transaction {
-  id: string;
+  id: number | string;
   type: TransactionType;
-  category: TransactionCategory;
   description: string;
   amount: number;
   paymentMethod: PaymentMethod;
-  barberId?: string;
+  barberId?: number | string | null;
   barberName: string;
-  timestamp: string; // ISO ou formatado HH:mm
+  timestamp: string;
+  createdAt?: string;
 }
 
-export type AppointmentStatus = "EM_ESPERA" | "NA_CADEIRA" | "CONCLUIDO" | "CANCELADO";
+export type AppointmentStatus = "agendado" | "concluido" | "cancelado";
 
 export interface Appointment {
-  id: string;
+  id: number | string;
   clientName: string;
   service: string;
-  time: string; // Ex: "14:30"
-  barberId: string;
+  time: string;
+  barberId: number | string;
   barberName: string;
-  amount: number;
   status: AppointmentStatus;
 }
 
-export type MaterialUrgency = "BAIXA" | "MEDIA" | "ALTA" | "CRITICA";
-export type MaterialStatus = "PENDENTE" | "COMPRADO" | "ENTREGUE";
+export type MaterialUrgency = "baixa" | "media" | "alta";
+export type MaterialStatus = "pendente" | "comprado";
 
 export interface MaterialRequest {
-  id: string;
+  id: number | string;
   item: string;
-  quantity: string;
+  quantity: number;
   urgency: MaterialUrgency;
   status: MaterialStatus;
   requestedBy: string;
@@ -65,10 +54,25 @@ export interface DailySummary {
   saldoLiquido: number;
   totalEntradas: number;
   totalSaidas: number;
-  totalAtendimentos: number;
+  totalMovimentacoes: number;
   porFormaPagamento: {
     pix: number;
     dinheiro: number;
-    cartao: number;
+    cartaoCredito: number;
+    cartaoDebito: number;
   };
+  movimentacoes: Transaction[];
+}
+
+export interface AdminUsuariosResponse {
+  limite_maximo: number;
+  total_membros: number;
+  vagas_livres: number;
+  usuarios: Array<{
+    id: number;
+    nome: string;
+    pin: string;
+    papel: UserRole;
+    criado_em: string;
+  }>;
 }
