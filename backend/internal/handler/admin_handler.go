@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const usuariosLimitAdvisoryLockKey int64 = 9042001
+
+var pinQuatroDigitosRegex = regexp.MustCompile(`^\d{4}$`)
+
 type AdminHandler struct {
 	db *database.DB
 }
@@ -21,7 +26,58 @@ func NewAdminHandler(db *database.DB) *AdminHandler {
 	return &AdminHandler{db: db}
 }
 
-// ListarUsuarios retorna todos os colaboradores da tabela usuarios do Neon
+func validarUsuarioInput(nome, pin string) (string, string, string) {
+	nomeTrim := strings.TrimSpace(nome)
+	pinTrim := strings.TrimSpace(pin)
+
+	if nomeTrim == "" {
+		return "", "", "O nome do colaborador é obrigatório"
+	}
+	if len([]rune(nomeTrim)) > 100 {
+		return "", "", "O nome do colaborador deve ter no máximo 100 caracteres"
+	}
+	if !pinQuatroDigitosRegex.MatchString(pinTrim) {
+		return "", "", "O PIN deve conter exatamente 4 dígitos numéricos"
+	}
+
+	return nomeTrim, pinTrim, ""
+}
+
+// ListarEquipePublica retorna os membros da equipe autenticada sem expor o PIN
+// GET /api/equipe
+func (h *AdminHandler) ListarEquipePublica(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	query := `
+		SELECT id, nome, papel, criado_em
+		FROM usuarios
+		ORDER BY id ASC;
+	`
+
+	rows, err := h.db.Pool.Query(r.Context(), query)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao listar equipe no Neon: " + err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	membros := make([]domain.EquipeMembro, 0)
+	for rows.Next() {
+		var m domain.EquipeMembro
+		if err := rows.Scan(&m.ID, &m.Nome, &m.Papel, &m.CriadoEm); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao mapear membro da equipe: " + err.Error()})
+			return
+		}
+		membros = append(membros, m)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(membros)
+}
+
+// ListarUsuarios retorna todos os colaboradores da tabela usuarios do Neon (apenas CEO/admin)
 // GET /api/admin/usuarios
 func (h *AdminHandler) ListarUsuarios(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -67,7 +123,7 @@ func (h *AdminHandler) ListarUsuarios(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// CriarUsuario adiciona um novo membro com validação estrita do limite de 5 cadastros
+// CriarUsuario adiciona um novo membro com transação/lock e trava estrita de 5 cadastros
 // POST /api/admin/usuarios
 func (h *AdminHandler) CriarUsuario(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -79,20 +135,15 @@ func (h *AdminHandler) CriarUsuario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.Nome) == "" {
+	nomeTrim, pinTrim, errMsg := validarUsuarioInput(req.Nome, req.PIN)
+	if errMsg != "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O nome do colaborador é obrigatório"})
-		return
-	}
-
-	if strings.TrimSpace(req.PIN) == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O PIN numérico deve ser informado"})
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
 		return
 	}
 
 	// Normaliza papel para 'admin' ou 'barbeiro' conforme o check constraint do Neon
-	papelNormalizado := domain.PapelUsuario(strings.ToLower(string(req.Papel)))
+	papelNormalizado := domain.PapelUsuario(strings.ToLower(strings.TrimSpace(string(req.Papel))))
 	if papelNormalizado == "ceo" {
 		papelNormalizado = domain.PapelAdmin
 	}
@@ -100,10 +151,23 @@ func (h *AdminHandler) CriarUsuario(w http.ResponseWriter, r *http.Request) {
 		papelNormalizado = domain.PapelBarbeiro
 	}
 
-	// 🔒 REGRA DE NEGÓCIO: Limite estrito de no máximo 5 colaboradores no Neon
-	var totalCadastrados int
-	err := h.db.Pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM usuarios").Scan(&totalCadastrados)
+	// 🔒 Transação com advisory lock para evitar race condition no limite de 5 cadastros
+	tx, err := h.db.Pool.Begin(r.Context())
 	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao iniciar transação no Neon"})
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if _, err := tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock($1)", usuariosLimitAdvisoryLockKey); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao sincronizar cadastro de equipe"})
+		return
+	}
+
+	var totalCadastrados int
+	if err := tx.QueryRow(r.Context(), "SELECT COUNT(*) FROM usuarios").Scan(&totalCadastrados); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar total de colaboradores"})
 		return
@@ -117,10 +181,8 @@ func (h *AdminHandler) CriarUsuario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validação de unicidade do PIN
 	var pinJaExiste bool
-	err = h.db.Pool.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM usuarios WHERE pin = $1)", req.PIN).Scan(&pinJaExiste)
-	if err != nil {
+	if err := tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM usuarios WHERE pin = $1)", pinTrim).Scan(&pinJaExiste); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao validar unicidade do PIN"})
 		return
@@ -138,22 +200,21 @@ func (h *AdminHandler) CriarUsuario(w http.ResponseWriter, r *http.Request) {
 		RETURNING id, criado_em;
 	`
 
-	var u domain.Usuario
-	u.Nome = req.Nome
-	u.PIN = req.PIN
-	u.Papel = papelNormalizado
+	u := domain.Usuario{
+		Nome:  nomeTrim,
+		PIN:   pinTrim,
+		Papel: papelNormalizado,
+	}
 
-	err = h.db.Pool.QueryRow(
-		r.Context(),
-		query,
-		req.Nome,
-		req.PIN,
-		papelNormalizado,
-	).Scan(&u.ID, &u.CriadoEm)
-
-	if err != nil {
+	if err := tx.QueryRow(r.Context(), query, nomeTrim, pinTrim, papelNormalizado).Scan(&u.ID, &u.CriadoEm); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao criar usuário no Neon: " + err.Error()})
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao confirmar criação do colaborador"})
 		return
 	}
 
@@ -181,18 +242,10 @@ func (h *AdminHandler) EditarUsuario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nomeTrim := strings.TrimSpace(req.Nome)
-	pinTrim := strings.TrimSpace(req.PIN)
-
-	if nomeTrim == "" {
+	nomeTrim, pinTrim, errMsg := validarUsuarioInput(req.Nome, req.PIN)
+	if errMsg != "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O nome não pode ser vazio"})
-		return
-	}
-
-	if pinTrim == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O PIN não pode ser vazio"})
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
 		return
 	}
 
@@ -275,8 +328,13 @@ func (h *AdminHandler) DeletarUsuario(w http.ResponseWriter, r *http.Request) {
 	var papel string
 	err = h.db.Pool.QueryRow(r.Context(), "SELECT papel FROM usuarios WHERE id = $1", id).Scan(&papel)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Colaborador não encontrado no banco de dados"})
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Colaborador não encontrado no banco de dados"})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar colaborador: " + err.Error()})
 		return
 	}
 
@@ -288,9 +346,7 @@ func (h *AdminHandler) DeletarUsuario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove o barbeiro do Neon
-	_, err = h.db.Pool.Exec(r.Context(), "DELETE FROM usuarios WHERE id = $1", id)
-	if err != nil {
+	if _, err := h.db.Pool.Exec(r.Context(), "DELETE FROM usuarios WHERE id = $1", id); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao remover colaborador do Neon: " + err.Error()})
 		return

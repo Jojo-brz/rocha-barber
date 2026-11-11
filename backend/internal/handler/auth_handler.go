@@ -3,20 +3,23 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/barbearia-rocha/backend/internal/auth"
 	"github.com/barbearia-rocha/backend/internal/database"
 	"github.com/barbearia-rocha/backend/internal/domain"
 	"github.com/jackc/pgx/v5"
 )
 
 type AuthHandler struct {
-	db *database.DB
+	db     *database.DB
+	secret []byte
 }
 
-func NewAuthHandler(db *database.DB) *AuthHandler {
-	return &AuthHandler{db: db}
+func NewAuthHandler(db *database.DB, secret []byte) *AuthHandler {
+	return &AuthHandler{db: db, secret: secret}
 }
 
 // LoginPIN valida o PIN enviado pelo usuário contra a tabela usuarios do Neon
@@ -31,7 +34,8 @@ func (h *AuthHandler) LoginPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.PIN) == 0 {
+	pinTrim := strings.TrimSpace(req.PIN)
+	if pinTrim == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "O PIN numérico deve ser informado"})
 		return
@@ -45,7 +49,7 @@ func (h *AuthHandler) LoginPIN(w http.ResponseWriter, r *http.Request) {
 	`
 
 	var u domain.Usuario
-	err := h.db.Pool.QueryRow(r.Context(), query, req.PIN).Scan(
+	err := h.db.Pool.QueryRow(r.Context(), query, pinTrim).Scan(
 		&u.ID,
 		&u.Nome,
 		&u.Papel,
@@ -62,7 +66,12 @@ func (h *AuthHandler) LoginPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := fmt.Sprintf("rocha_auth_%d_%s", u.ID, u.Papel)
+	token, err := auth.SignToken(u.ID, u.Papel, h.secret, 24*time.Hour)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao gerar token de sessão"})
+		return
+	}
 
 	resp := domain.AuthResponse{
 		ID:    u.ID,

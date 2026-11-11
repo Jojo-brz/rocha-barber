@@ -1,17 +1,47 @@
 import {
   User,
+  UserRole,
   DailySummary,
   Transaction,
   Appointment,
+  AppointmentStatus,
   PaymentMethod,
   TransactionType,
   AdminUsuariosResponse,
   MaterialRequest,
   MaterialUrgency,
+  MaterialStatus,
 } from "@/types";
 
 const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 export const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
+
+const SESSION_KEY = "barbearia_rocha_user";
+let inMemoryToken: string | null = null;
+
+function getSessionToken(): string | null {
+  if (inMemoryToken) return inMemoryToken;
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: string };
+    return parsed?.token || null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSessionAuth() {
+  inMemoryToken = null;
+  if (typeof window !== "undefined") {
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch {
+      // Ignora erro de storage
+    }
+  }
+}
 
 class ApiError extends Error {
   constructor(public message: string, public status?: number) {
@@ -22,10 +52,17 @@ class ApiError extends Error {
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options.headers || {}),
+    ...(options.headers as Record<string, string> | undefined),
   };
+
+  if (endpoint !== "/api/auth/pin") {
+    const token = getSessionToken();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
 
   try {
     const res = await fetch(url, {
@@ -34,6 +71,13 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     });
 
     const data = await res.json().catch(() => null);
+
+    if (res.status === 401 && endpoint !== "/api/auth/pin") {
+      clearSessionAuth();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("rocha:unauthorized"));
+      }
+    }
 
     if (!res.ok) {
       const errorMsg = data?.error || `Erro na requisição (${res.status})`;
@@ -58,12 +102,14 @@ export const api = {
     const data = await request<{
       id: number;
       nome: string;
-      papel: "admin" | "barbeiro";
+      papel: UserRole;
       token: string;
     }>("/api/auth/pin", {
       method: "POST",
       body: JSON.stringify({ pin }),
     });
+
+    inMemoryToken = data.token;
 
     return {
       id: data.id,
@@ -71,6 +117,24 @@ export const api = {
       role: data.papel,
       token: data.token,
     };
+  },
+
+  // Equipe autenticada (sem expor PINs)
+  async getEquipe(): Promise<User[]> {
+    const raw = await request<
+      Array<{
+        id: number;
+        nome: string;
+        papel: UserRole;
+      }>
+    >("/api/equipe", { method: "GET" });
+
+    return (raw || []).map((m, idx) => ({
+      id: m.id,
+      name: m.nome,
+      role: m.papel,
+      stationNumber: idx + 1,
+    }));
   },
 
   // 2. Controle de Caixa Diário
@@ -177,10 +241,16 @@ export const api = {
   },
 
   // 3. Agendamentos
-  async getAgendamentos(barbeiroId?: number | string): Promise<Appointment[]> {
-    const endpoint = barbeiroId
-      ? `/api/agendamentos?barbeiro_id=${barbeiroId}`
-      : "/api/agendamentos";
+  async getAgendamentos(
+    barbeiroId?: number | string,
+    data?: string
+  ): Promise<Appointment[]> {
+    const params = new URLSearchParams();
+    if (barbeiroId) params.set("barbeiro_id", String(barbeiroId));
+    if (data) params.set("data", data);
+
+    const qs = params.toString();
+    const endpoint = qs ? `/api/agendamentos?${qs}` : "/api/agendamentos";
 
     const raw = await request<
       Array<{
@@ -191,7 +261,7 @@ export const api = {
         servico: string;
         data_hora: string;
         hora_formatada?: string;
-        status: Appointment["status"];
+        status: AppointmentStatus;
       }>
     >(endpoint, { method: "GET" });
 
@@ -232,7 +302,7 @@ export const api = {
       servico: string;
       data_hora: string;
       hora_formatada?: string;
-      status: Appointment["status"];
+      status: AppointmentStatus;
     }>("/api/agendamentos", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -249,6 +319,35 @@ export const api = {
     };
   },
 
+  async atualizarStatusAgendamento(
+    id: number | string,
+    status: AppointmentStatus
+  ): Promise<Appointment> {
+    const raw = await request<{
+      id: number;
+      barbeiro_id: number;
+      barbeiro_nome?: string;
+      cliente_nome: string;
+      servico: string;
+      data_hora: string;
+      hora_formatada?: string;
+      status: AppointmentStatus;
+    }>(`/api/agendamentos/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+
+    return {
+      id: raw.id,
+      clientName: raw.cliente_nome,
+      service: raw.servico,
+      time: raw.hora_formatada || "12:00",
+      barberId: raw.barbeiro_id,
+      barberName: raw.barbeiro_nome || "Barbeiro",
+      status: raw.status,
+    };
+  },
+
   // 4. Pedidos de Materiais (Neon: pedidos_materiais)
   async getMateriais(): Promise<MaterialRequest[]> {
     const raw = await request<
@@ -259,7 +358,7 @@ export const api = {
         item: string;
         quantidade: number;
         urgencia: MaterialUrgency;
-        status: MaterialRequest["status"];
+        status: MaterialStatus;
         criado_em: string;
       }>
     >("/api/materiais", { method: "GET" });
@@ -297,7 +396,7 @@ export const api = {
       item: string;
       quantidade: number;
       urgencia: MaterialUrgency;
-      status: MaterialRequest["status"];
+      status: MaterialStatus;
       criado_em: string;
     }>("/api/materiais", {
       method: "POST",
@@ -315,7 +414,35 @@ export const api = {
     };
   },
 
-  // 5. Gestão de Equipe (CEO)
+  async atualizarStatusMaterial(
+    id: number | string,
+    status: MaterialStatus
+  ): Promise<MaterialRequest> {
+    const raw = await request<{
+      id: number;
+      solicitante_nome?: string;
+      item: string;
+      quantidade: number;
+      urgencia: MaterialUrgency;
+      status: MaterialStatus;
+      criado_em: string;
+    }>(`/api/materiais/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+
+    return {
+      id: raw.id,
+      item: raw.item,
+      quantity: raw.quantidade,
+      urgency: raw.urgencia,
+      status: raw.status,
+      requestedBy: raw.solicitante_nome || "Bancada",
+      requestedAt: "Hoje",
+    };
+  },
+
+  // 5. Gestão de Equipe (Exclusivo CEO)
   async getUsuariosAdmin(): Promise<AdminUsuariosResponse> {
     return request<AdminUsuariosResponse>("/api/admin/usuarios", {
       method: "GET",
@@ -325,13 +452,13 @@ export const api = {
   async criarUsuarioAdmin(payload: {
     nome: string;
     pin: string;
-    papel: "admin" | "barbeiro";
+    papel: UserRole;
   }): Promise<User> {
     const raw = await request<{
       id: number;
       nome: string;
       pin: string;
-      papel: "admin" | "barbeiro";
+      papel: UserRole;
     }>("/api/admin/usuarios", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -356,10 +483,22 @@ export const api = {
   async editarUsuarioAdmin(
     id: number,
     payload: { nome: string; pin: string }
-  ): Promise<{ id: number; nome: string; pin: string; papel: string }> {
-    return request<{ id: number; nome: string; pin: string; papel: string }>(
-      `/api/admin/usuarios/${id}`,
-      { method: "PUT", body: JSON.stringify(payload) }
-    );
+  ): Promise<User> {
+    const raw = await request<{
+      id: number;
+      nome: string;
+      pin: string;
+      papel: UserRole;
+    }>(`/api/admin/usuarios/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      id: raw.id,
+      name: raw.nome,
+      pin: raw.pin,
+      role: raw.papel,
+    };
   },
 };

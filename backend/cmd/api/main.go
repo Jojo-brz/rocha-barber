@@ -7,16 +7,48 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/barbearia-rocha/backend/internal/auth"
 	"github.com/barbearia-rocha/backend/internal/database"
 	"github.com/barbearia-rocha/backend/internal/handler"
+	"github.com/barbearia-rocha/backend/internal/middleware"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 )
+
+// buildAllowedOrigins monta a lista explícita de origens CORS autorizadas (FRONTEND_URL, ALLOWED_ORIGINS + localhost).
+func buildAllowedOrigins() []string {
+	seen := map[string]struct{}{}
+	origins := make([]string, 0, 6)
+
+	addOrigin := func(raw string) {
+		trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if trimmed == "" {
+			return
+		}
+		if _, exists := seen[trimmed]; !exists {
+			seen[trimmed] = struct{}{}
+			origins = append(origins, trimmed)
+		}
+	}
+
+	// Origens locais de desenvolvimento
+	addOrigin("http://localhost:3000")
+	addOrigin("http://127.0.0.1:3000")
+
+	for _, envVar := range []string{os.Getenv("FRONTEND_URL"), os.Getenv("ALLOWED_ORIGINS")} {
+		for _, item := range strings.Split(envVar, ",") {
+			addOrigin(item)
+		}
+	}
+
+	return origins
+}
 
 func main() {
 	// Carrega arquivo .env se existir no diretório local
@@ -40,8 +72,12 @@ func main() {
 	}
 	defer db.Fechar()
 
+	// Chave HMAC para tokens de sessão
+	authSecret := auth.DeriveSecret(os.Getenv("AUTH_SECRET"), databaseURL)
+	authMiddleware := middleware.NewAuthMiddleware(db, authSecret)
+
 	// 2. Inicialização dos Handlers da API
-	authHandler := handler.NewAuthHandler(db)
+	authHandler := handler.NewAuthHandler(db, authSecret)
 	caixaHandler := handler.NewCaixaHandler(db)
 	agendamentoHandler := handler.NewAgendamentoHandler(db)
 	adminHandler := handler.NewAdminHandler(db)
@@ -57,18 +93,20 @@ func main() {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(30 * time.Second))
 
-	// Configuração do CORS para integração com Next.js (Local, Vercel ou dispositivos móveis)
+	allowedOrigins := buildAllowedOrigins()
+	log.Printf("🔒 CORS autorizado para origens: %v", allowedOrigins)
+
+	// CORS restrito às origens configuradas (autenticação via header Bearer token, sem cookies)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"https://*", "http://*"},
-		AllowOriginFunc:  func(r *http.Request, origin string) bool { return true },
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300, // 5 minutos
 	}))
 
-	// Rota de Healthcheck
+	// Rota pública de Healthcheck
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"online","sistema":"Barbearia Rocha API","banco":"Neon PostgreSQL"}`))
@@ -76,26 +114,42 @@ func main() {
 
 	// 4. Registro dos Endpoints Principais
 	r.Route("/api", func(r chi.Router) {
-		// Autenticação Rápida de Bancada por PIN
+		// Rota pública: Autenticação por PIN
 		r.Post("/auth/pin", authHandler.LoginPIN)
 
-		// Controle de Caixa Diário
-		r.Get("/caixa", caixaHandler.ObterCaixaDiario)
-		r.Post("/caixa", caixaHandler.RegistrarMovimentacao)
+		// Rotas autenticadas (Barbeiro e CEO)
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware.RequireAuth)
 
-		// Agendamentos de Atendimentos
-		r.Get("/agendamentos", agendamentoHandler.ListarAgendamentos)
-		r.Post("/agendamentos", agendamentoHandler.CriarAgendamento)
+			// Lista pública para equipe logada (sem PINs)
+			r.Get("/equipe", adminHandler.ListarEquipePublica)
 
-		// Pedidos de Insumos & Materiais
-		r.Get("/materiais", materialHandler.ListarMateriais)
-		r.Post("/materiais", materialHandler.CriarPedidoMaterial)
+			// Controle de Caixa Diário
+			r.Get("/caixa", caixaHandler.ObterCaixaDiario)
+			r.Post("/caixa", caixaHandler.RegistrarMovimentacao)
 
-		// Painel de Gestão de Equipe (CEO - Limite estrito de 5 cadastros)
-		r.Get("/admin/usuarios", adminHandler.ListarUsuarios)
-		r.Post("/admin/usuarios", adminHandler.CriarUsuario)
-		r.Put("/admin/usuarios/{id}", adminHandler.EditarUsuario)
-		r.Delete("/admin/usuarios/{id}", adminHandler.DeletarUsuario)
+			// Agendamentos de Atendimentos
+			r.Get("/agendamentos", agendamentoHandler.ListarAgendamentos)
+			r.Post("/agendamentos", agendamentoHandler.CriarAgendamento)
+			r.Patch("/agendamentos/{id}", agendamentoHandler.AtualizarStatusAgendamento)
+
+			// Pedidos de Insumos & Materiais (solicitação aberta à bancada)
+			r.Get("/materiais", materialHandler.ListarMateriais)
+			r.Post("/materiais", materialHandler.CriarPedidoMaterial)
+
+			// Rotas exclusivas do CEO/Admin
+			r.Group(func(r chi.Router) {
+				r.Use(authMiddleware.RequireAdmin)
+
+				r.Patch("/materiais/{id}", materialHandler.AtualizarStatusMaterial)
+
+				// Painel de Gestão de Equipe (CEO - Limite estrito de 5 cadastros)
+				r.Get("/admin/usuarios", adminHandler.ListarUsuarios)
+				r.Post("/admin/usuarios", adminHandler.CriarUsuario)
+				r.Put("/admin/usuarios/{id}", adminHandler.EditarUsuario)
+				r.Delete("/admin/usuarios/{id}", adminHandler.DeletarUsuario)
+			})
+		})
 	})
 
 	// 5. Inicialização com Graceful Shutdown

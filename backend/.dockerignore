@@ -3,3 +3,5 @@
 .git
 *.tmp
 *.log
+*.exe
+tmpcheck/

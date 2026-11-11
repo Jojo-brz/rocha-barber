@@ -5,6 +5,7 @@ import {
   User,
   Transaction,
   Appointment,
+  AppointmentStatus,
   MaterialRequest,
   PaymentMethod,
   TransactionType,
@@ -38,7 +39,29 @@ import {
   Plus,
   FileDown,
   Pencil,
+  Check,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
+
+function getLocalDateISO(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseCurrencyInput(raw: string): number {
+  const cleaned = raw.trim().replace(/[^\d.,-]/g, "");
+  if (!cleaned) return NaN;
+
+  // Se houver vírgula e ponto (ex: "1.200,50"), trata ponto como separador de milhar
+  if (cleaned.includes(",") && cleaned.includes(".")) {
+    const normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    return parseFloat(normalized);
+  }
+  return parseFloat(cleaned.replace(",", "."));
+}
 
 interface DashboardCaixaProps {
   currentUser: User;
@@ -84,13 +107,17 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [selectedBarberId, setSelectedBarberId] = useState<number | string>(currentUser.id);
   const [isSubmittingTx, setIsSubmittingTx] = useState<boolean>(false);
 
-  // Modal de Novo Agendamento
+  // Modal de Novo Agendamento & filtro da Agenda
+  const [agendaDateFilter, setAgendaDateFilter] = useState<string>(() => getLocalDateISO());
   const [isAppModalOpen, setIsAppModalOpen] = useState<boolean>(false);
   const [clientNameInput, setClientNameInput] = useState<string>("");
   const [serviceInput, setServiceInput] = useState<string>("");
+  const [appDateInput, setAppDateInput] = useState<string>(() => getLocalDateISO());
   const [timeInput, setTimeInput] = useState<string>("");
   const [appBarberId, setAppBarberId] = useState<number | string>(currentUser.id);
   const [isSubmittingApp, setIsSubmittingApp] = useState<boolean>(false);
+  const [updatingAppId, setUpdatingAppId] = useState<number | string | null>(null);
+  const [updatingMaterialId, setUpdatingMaterialId] = useState<number | string | null>(null);
 
   // Modal de Pedido de Insumo
   const [isMaterialModalOpen, setIsMaterialModalOpen] = useState<boolean>(false);
@@ -110,20 +137,23 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     setErrorMessage("");
 
     try {
-      const [caixaRes, agendamentosRes, materiaisRes, adminRes] = await Promise.all([
+      const dateQuery = agendaDateFilter || "todos";
+      const [caixaRes, agendamentosRes, materiaisRes, equipeRes] = await Promise.all([
         api.getCaixaSummary(),
-        api.getAgendamentos(isCEO ? undefined : currentUser.id),
-        api.getMateriais().catch(() => []),
-        api.getUsuariosAdmin().catch(() => null),
+        api.getAgendamentos(isCEO ? undefined : currentUser.id, dateQuery),
+        api.getMateriais(),
+        isCEO ? api.getUsuariosAdmin() : api.getEquipe(),
       ]);
 
       setCaixaData(caixaRes);
       setAppointments(agendamentosRes);
       setMaterialRequests(materiaisRes);
 
-      if (adminRes?.usuarios) {
+      if (Array.isArray(equipeRes)) {
+        setTeamMembers(equipeRes);
+      } else if (equipeRes?.usuarios) {
         setTeamMembers(
-          adminRes.usuarios.map((u, idx) => ({
+          equipeRes.usuarios.map((u, idx) => ({
             id: u.id,
             name: u.nome,
             pin: u.pin,
@@ -138,7 +168,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [currentUser, isCEO]);
+  }, [currentUser, isCEO, agendaDateFilter]);
 
   useEffect(() => {
     carregarDados();
@@ -147,8 +177,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   // Handler para Novo Lançamento Financeiro (POST /api/caixa)
   const handleCreateTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    const val = parseFloat(amountInput.replace(",", "."));
-    if (isNaN(val) || val <= 0) return;
+    const val = parseCurrencyInput(amountInput);
+    if (isNaN(val) || val <= 0) {
+      alert("Informe um valor numérico maior que zero (ex: 45,00).");
+      return;
+    }
 
     setIsSubmittingTx(true);
     try {
@@ -475,7 +508,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       });
     }
 
-    const fileDate = reportDate.toISOString().slice(0, 10);
+    const fileDate = getLocalDateISO(reportDate);
     doc.save(`fechamento-caixa-rocha-${fileDate}.pdf`);
   };
 
@@ -484,9 +517,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     e.preventDefault();
     if (!clientNameInput.trim() || !serviceInput.trim() || !timeInput) return;
 
-    const [hours, minutes] = timeInput.split(":");
-    const scheduleDate = new Date();
-    scheduleDate.setHours(Number(hours), Number(minutes), 0, 0);
+    const baseDate = appDateInput || getLocalDateISO();
+    const [year, month, day] = baseDate.split("-").map(Number);
+    const [hours, minutes] = timeInput.split(":").map(Number);
+    const scheduleDate = new Date(year, month - 1, day, hours, minutes, 0, 0);
 
     setIsSubmittingApp(true);
     try {
@@ -506,6 +540,35 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       alert(err.message || "Erro ao criar agendamento.");
     } finally {
       setIsSubmittingApp(false);
+    }
+  };
+
+  // Handler para Atualizar Status do Agendamento (PATCH /api/agendamentos/{id})
+  const handleUpdateAppointmentStatus = async (
+    id: number | string,
+    status: AppointmentStatus
+  ) => {
+    setUpdatingAppId(id);
+    try {
+      await api.atualizarStatusAgendamento(id, status);
+      await carregarDados(true);
+    } catch (err: any) {
+      alert(err.message || "Erro ao atualizar status do agendamento.");
+    } finally {
+      setUpdatingAppId(null);
+    }
+  };
+
+  // Handler para Marcar Material como Comprado (PATCH /api/materiais/{id})
+  const handleMarkMaterialBought = async (id: number | string) => {
+    setUpdatingMaterialId(id);
+    try {
+      await api.atualizarStatusMaterial(id, "comprado");
+      await carregarDados(true);
+    } catch (err: any) {
+      alert(err.message || "Erro ao atualizar pedido de material.");
+    } finally {
+      setUpdatingMaterialId(null);
     }
   };
 
@@ -793,7 +856,14 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           </button>
 
           <button
-            onClick={() => setIsAppModalOpen(true)}
+            onClick={() => {
+              setAppDateInput(
+                agendaDateFilter && agendaDateFilter !== "todos"
+                  ? agendaDateFilter
+                  : getLocalDateISO()
+              );
+              setIsAppModalOpen(true);
+            }}
             className="p-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-200 font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all shadow-sm"
           >
             <Calendar className="w-5 h-5 text-amber-400" />
@@ -933,11 +1003,48 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         {/* ABA AGENDA: TABELA AGENDAMENTOS DO NEON */}
         {activeTab === "agenda" && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-              <span>Agendamentos do Neon</span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-400 px-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span>Filtro:</span>
+                <button
+                  type="button"
+                  onClick={() => setAgendaDateFilter(getLocalDateISO())}
+                  className={`px-2.5 py-1 rounded-lg font-semibold border transition-all ${
+                    agendaDateFilter === getLocalDateISO()
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                      : "bg-slate-900 text-slate-400 border-white/10 hover:text-white"
+                  }`}
+                >
+                  Hoje
+                </button>
+                <input
+                  type="date"
+                  value={agendaDateFilter === "todos" ? "" : agendaDateFilter}
+                  onChange={(e) => setAgendaDateFilter(e.target.value || "todos")}
+                  className="h-7 px-2 rounded-lg bg-slate-900 border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => setAgendaDateFilter("todos")}
+                  className={`px-2.5 py-1 rounded-lg font-semibold border transition-all ${
+                    agendaDateFilter === "todos"
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                      : "bg-slate-900 text-slate-400 border-white/10 hover:text-white"
+                  }`}
+                >
+                  Ver Todos
+                </button>
+              </div>
               <button
-                onClick={() => setIsAppModalOpen(true)}
-                className="text-amber-400 hover:underline font-semibold flex items-center gap-1"
+                onClick={() => {
+                  setAppDateInput(
+                    agendaDateFilter && agendaDateFilter !== "todos"
+                      ? agendaDateFilter
+                      : getLocalDateISO()
+                  );
+                  setIsAppModalOpen(true);
+                }}
+                className="text-amber-400 hover:underline font-semibold flex items-center gap-1 self-end sm:self-auto"
               >
                 <Plus className="w-3.5 h-3.5" /> Novo Agendamento
               </button>
@@ -945,7 +1052,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
             {appointments.length === 0 ? (
               <div className="p-8 text-center rounded-2xl bg-slate-900/40 border border-white/5">
-                <p className="text-sm text-slate-400">Nenhum atendimento na fila.</p>
+                <p className="text-sm text-slate-400">
+                  {agendaDateFilter === "todos"
+                    ? "Nenhum atendimento na fila."
+                    : "Nenhum agendamento encontrado para a data selecionada."}
+                </p>
                 <button
                   onClick={() => setIsAppModalOpen(true)}
                   className="mt-3 px-4 py-2 rounded-xl bg-amber-500/20 text-amber-300 text-xs font-bold border border-amber-500/30"
@@ -954,34 +1065,75 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 </button>
               </div>
             ) : (
-              appointments.map((app) => (
-                <div
-                  key={app.id}
-                  className="p-4 rounded-2xl bg-slate-900/60 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="px-2.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono font-bold text-xs flex flex-col items-center justify-center">
-                      <Clock className="w-3.5 h-3.5 mb-0.5" />
-                      {app.time}
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-white">
-                        {app.clientName}
-                      </h4>
-                      <p className="text-xs text-slate-300">{app.service}</p>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Profissional: <span className="text-slate-300">{app.barberName}</span>
-                      </p>
-                    </div>
-                  </div>
+              appointments.map((app) => {
+                const isUpdating = updatingAppId === app.id;
+                const statusBadge =
+                  app.status === "concluido"
+                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                    : app.status === "cancelado"
+                    ? "bg-rose-500/15 text-rose-400 border-rose-500/30"
+                    : "bg-amber-500/15 text-amber-300 border-amber-500/30";
 
-                  <div className="flex items-center gap-2 self-end sm:self-center">
-                    <span className="px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold capitalize">
-                      {app.status}
-                    </span>
+                return (
+                  <div
+                    key={app.id}
+                    className="p-4 rounded-2xl bg-slate-900/60 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="px-2.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono font-bold text-xs flex flex-col items-center justify-center">
+                        <Clock className="w-3.5 h-3.5 mb-0.5" />
+                        {app.time}
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white">
+                          {app.clientName}
+                        </h4>
+                        <p className="text-xs text-slate-300">{app.service}</p>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Profissional: <span className="text-slate-300">{app.barberName}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end sm:self-center flex-wrap">
+                      <span
+                        className={`px-3 py-1 rounded-full border text-xs font-bold capitalize ${statusBadge}`}
+                      >
+                        {app.status}
+                      </span>
+
+                      {app.status === "agendado" && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateAppointmentStatus(app.id, "concluido")}
+                            disabled={isUpdating}
+                            title="Marcar atendimento como concluído"
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition-all disabled:opacity-40"
+                          >
+                            {isUpdating ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            )}
+                            Concluir
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateAppointmentStatus(app.id, "cancelado")}
+                            disabled={isUpdating}
+                            title="Cancelar agendamento"
+                            className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-1 transition-all disabled:opacity-40"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            Cancelar
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
@@ -1006,47 +1158,82 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 <p className="text-sm text-slate-400">Nenhum pedido de material pendente.</p>
               </div>
             ) : (
-              materialRequests.map((req) => (
-                <div
-                  key={req.id}
-                  className="p-3.5 rounded-2xl bg-slate-900/60 border border-white/5 flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-2.5 h-10 rounded-full ${
-                        req.urgency === "alta"
-                          ? "bg-rose-500"
-                          : req.urgency === "media"
-                          ? "bg-amber-500"
-                          : "bg-slate-500"
-                      }`}
-                    />
-                    <div>
-                      <p className="text-sm font-semibold text-slate-200">
-                        {req.item} <span className="text-xs text-slate-400 font-mono">({req.quantity} un)</span>
-                      </p>
-                      <p className="text-[11px] text-slate-400">
-                        Solicitado por {req.requestedBy} • {req.requestedAt}
-                      </p>
+              materialRequests.map((req) => {
+                const isUpdatingMat = updatingMaterialId === req.id;
+                const isBought = req.status === "comprado";
+
+                return (
+                  <div
+                    key={req.id}
+                    className="p-3.5 rounded-2xl bg-slate-900/60 border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`w-2.5 h-10 rounded-full ${
+                          isBought
+                            ? "bg-emerald-500"
+                            : req.urgency === "alta"
+                            ? "bg-rose-500"
+                            : req.urgency === "media"
+                            ? "bg-amber-500"
+                            : "bg-slate-500"
+                        }`}
+                      />
+                      <div>
+                        <p
+                          className={`text-sm font-semibold ${
+                            isBought ? "text-slate-400 line-through" : "text-slate-200"
+                          }`}
+                        >
+                          {req.item}{" "}
+                          <span className="text-xs text-slate-400 font-mono">
+                            ({req.quantity} un)
+                          </span>
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Solicitado por {req.requestedBy} • {req.requestedAt}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end sm:self-center">
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                          req.urgency === "alta"
+                            ? "bg-rose-500/20 text-rose-300"
+                            : "bg-amber-500/20 text-amber-300"
+                        }`}
+                      >
+                        {req.urgency}
+                      </span>
+                      <span
+                        className={`text-[11px] font-mono px-2 py-1 rounded-lg border uppercase ${
+                          isBought
+                            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                            : "bg-white/5 text-slate-300 border-white/5"
+                        }`}
+                      >
+                        {req.status}
+                      </span>
+                      {isCEO && req.status === "pendente" && (
+                        <button
+                          type="button"
+                          onClick={() => handleMarkMaterialBought(req.id)}
+                          disabled={isUpdatingMat}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/35 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition-all disabled:opacity-40"
+                        >
+                          {isUpdatingMat ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Check className="w-3.5 h-3.5" />
+                          )}
+                          Comprado
+                        </button>
+                      )}
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
-                        req.urgency === "alta"
-                          ? "bg-rose-500/20 text-rose-300"
-                          : "bg-amber-500/20 text-amber-300"
-                      }`}
-                    >
-                      {req.urgency}
-                    </span>
-                    <span className="text-[11px] font-mono bg-white/5 px-2 py-1 rounded-lg text-slate-300 border border-white/5 uppercase">
-                      {req.status}
-                    </span>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
@@ -1185,7 +1372,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   onChange={(e) => setSelectedBarberId(e.target.value)}
                   className="w-full h-11 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
                 >
-                  {teamMembers.map((u) => (
+                  {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.name} ({u.role})
                     </option>
@@ -1276,17 +1463,31 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Horário
-                </label>
-                <input
-                  type="time"
-                  value={timeInput}
-                  onChange={(e) => setTimeInput(e.target.value)}
-                  required
-                  className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Data
+                  </label>
+                  <input
+                    type="date"
+                    value={appDateInput}
+                    onChange={(e) => setAppDateInput(e.target.value)}
+                    required
+                    className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Horário
+                  </label>
+                  <input
+                    type="time"
+                    value={timeInput}
+                    onChange={(e) => setTimeInput(e.target.value)}
+                    required
+                    className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
               </div>
 
               <div>
@@ -1312,7 +1513,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   onChange={(e) => setAppBarberId(e.target.value)}
                   className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
                 >
-                  {teamMembers.map((u) => (
+                  {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
                     <option key={u.id} value={u.id}>
                       {u.name} ({u.role})
                     </option>

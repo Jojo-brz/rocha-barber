@@ -61,6 +61,14 @@ type Usuario struct {
 	CriadoEm time.Time    `json:"criado_em"`
 }
 
+// EquipeMembro representa os dados públicos de um membro da equipe (sem expor PIN).
+type EquipeMembro struct {
+	ID       int64        `json:"id"`
+	Nome     string       `json:"nome"`
+	Papel    PapelUsuario `json:"papel"`
+	CriadoEm time.Time    `json:"criado_em"`
+}
+
 type MovimentacaoCaixa struct {
 	ID             int64            `json:"id"`
 	BarbeiroID     *int64           `json:"barbeiro_id,omitempty"`
@@ -132,6 +140,14 @@ type NovoUsuarioRequest struct {
 type EditarUsuarioRequest struct {
 	Nome  string `json:"nome"`
 	PIN   string `json:"pin"`
+}
+
+type AtualizarStatusAgendamentoRequest struct {
+	Status StatusAgendamento `json:"status"`
+}
+
+type AtualizarStatusMaterialRequest struct {
+	Status StatusMaterial `json:"status"`
 }
 
 type NovoPedidoMaterialRequest struct {

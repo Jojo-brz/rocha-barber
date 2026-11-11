@@ -54,18 +54,23 @@ barbearia-rocha/
 │   │   └── api/
 │   │       └── main.go                   # Servidor HTTP (:8080) com Chi, CORS e logs
 │   ├── internal/
+│   │   ├── auth/
+│   │   │   └── token.go                  # Assinatura e verificação HMAC-SHA256 de tokens
 │   │   ├── database/
 │   │   │   └── db.go                     # Pool pgx, migrações DDL e seed inicial no Neon
 │   │   ├── domain/
 │   │   │   └── models.go                 # Modelos de dados e DTOs
+│   │   ├── middleware/
+│   │   │   └── auth.go                   # RequireAuth (Bearer) e RequireAdmin (CEO)
 │   │   └── handler/
 │   │       ├── auth_handler.go           # POST /api/auth/pin
 │   │       ├── caixa_handler.go          # GET & POST /api/caixa
-│   │       ├── agendamento_handler.go    # GET & POST /api/agendamentos
-│   │       └── admin_handler.go          # GET & POST /api/admin/usuarios
+│   │       ├── agendamento_handler.go    # GET, POST & PATCH /api/agendamentos (com filtro ?data=)
+│   │       ├── material_handler.go       # GET, POST & PATCH /api/materiais
+│   │       └── admin_handler.go          # GET /api/equipe + CRUD /api/admin/usuarios
 │   ├── .env.example
 │   └── go.mod
-├── .env.local                            # NEXT_PUBLIC_API_URL=http://localhost:8080
+├── .env.example                          # Exemplo para NEXT_PUBLIC_API_URL
 ├── tailwind.config.ts
 ├── tsconfig.json
 └── package.json

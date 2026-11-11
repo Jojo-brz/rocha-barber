@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { User } from "@/types";
+import { clearSessionAuth } from "@/services/api";
 import { PinLogin } from "@/components/auth/pin-login";
 import { DashboardCaixa } from "@/components/dashboard/dashboard-caixa";
 
@@ -11,33 +12,38 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
-  // Restaura sessão ativa no tablet/celular da bancada ao recarregar a página
+  const handleLogout = useCallback(() => {
+    setCurrentUser(null);
+    clearSessionAuth();
+  }, []);
+
+  // Restaura sessão ativa com token válido e escuta expiração/401 da API
   useEffect(() => {
     try {
       const stored = sessionStorage.getItem(SESSION_KEY);
       if (stored) {
-        setCurrentUser(JSON.parse(stored));
+        const parsed = JSON.parse(stored) as User;
+        if (parsed?.token && parsed.token.includes(".")) {
+          setCurrentUser(parsed);
+        } else {
+          clearSessionAuth();
+        }
       }
     } catch {
-      // Ignora erro de storage
+      clearSessionAuth();
     } finally {
       setIsInitializing(false);
     }
-  }, []);
+
+    const onUnauthorized = () => handleLogout();
+    window.addEventListener("rocha:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("rocha:unauthorized", onUnauthorized);
+  }, [handleLogout]);
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
-    } catch {
-      // Ignora erro de storage
-    }
-  };
-
-  const handleLogout = () => {
-    setCurrentUser(null);
-    try {
-      sessionStorage.removeItem(SESSION_KEY);
     } catch {
       // Ignora erro de storage
     }
