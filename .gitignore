@@ -1,0 +1,79 @@
+# ==========================================
+# 💈 Barbearia Rocha - .gitignore
+# Next.js (Frontend) + Golang (Backend)
+# ==========================================
+
+# --- Dependências Node / Next.js ---
+node_modules/
+/.pnp
+.pnp.js
+
+# --- Builds & Artefatos de Produção ---
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Variáveis de Ambiente & Segredos ---
+.env
+.env*.local
+.env.production
+.env.development
+.env.test
+
+# --- Binários & Artefatos Golang ---
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/backend/bin/
+/backend/main
+/backend/api
+go.work
+go.work.sum
+
+# --- Banco de Dados Local (SQLite/Dumps) ---
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+
+# --- Sistema Operacional ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# --- Editores e IDEs ---
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# --- Arquivos Temporários ---
+*.tmp
+*.temp
+.temp/
