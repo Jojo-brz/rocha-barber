@@ -113,6 +113,18 @@ func (db *DB) verificarSchema(ctx context.Context) error {
 	`
 	_, _ = db.Pool.Exec(ctx, seedQuery)
 
+	// Garante que registros antigos sem barbeiro_id fiquem vinculados ao CEO/Admin
+	_, _ = db.Pool.Exec(ctx, `
+		UPDATE movimentacoes_caixa
+		SET barbeiro_id = (SELECT id FROM usuarios WHERE papel = 'admin' ORDER BY id ASC LIMIT 1)
+		WHERE barbeiro_id IS NULL;
+	`)
+	_, _ = db.Pool.Exec(ctx, `
+		UPDATE agendamentos
+		SET barbeiro_id = (SELECT id FROM usuarios WHERE papel = 'admin' ORDER BY id ASC LIMIT 1)
+		WHERE barbeiro_id IS NULL;
+	`)
+
 	log.Println("✅ [Database] Schema do Neon verificado e sincronizado!")
 	return nil
 }

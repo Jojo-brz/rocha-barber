@@ -9,8 +9,13 @@ type PapelUsuario string
 
 const (
 	PapelAdmin    PapelUsuario = "admin"
+	PapelCEO      PapelUsuario = "ceo"
 	PapelBarbeiro PapelUsuario = "barbeiro"
 )
+
+func IsAdminRole(papel PapelUsuario) bool {
+	return papel == PapelAdmin || papel == PapelCEO
+}
 
 type TipoMovimentacao string
 
@@ -78,6 +83,8 @@ type MovimentacaoCaixa struct {
 	Valor          float64          `json:"valor"`
 	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
 	CriadoEm       time.Time        `json:"criado_em"`
+	DataFormatada  string           `json:"data_formatada,omitempty"`
+	HoraFormatada  string           `json:"hora_formatada,omitempty"`
 }
 
 type Agendamento struct {
@@ -122,6 +129,7 @@ type NovaMovimentacaoRequest struct {
 	Descricao      string           `json:"descricao"`
 	Valor          float64          `json:"valor"`
 	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
+	Data           *string          `json:"data,omitempty"`
 }
 
 type NovoAgendamentoRequest struct {
@@ -164,11 +172,29 @@ type FormasPagamentoTotais struct {
 	CartaoDebito  float64 `json:"cartao_debito"`
 }
 
+type PeriodoCaixaResumo struct {
+	Entradas           float64 `json:"entradas"`
+	Saidas             float64 `json:"saidas"`
+	SaldoLiquido       float64 `json:"saldo_liquido"`
+	TotalMovimentacoes int     `json:"total_movimentacoes"`
+}
+
+type FaturamentoPeriodos struct {
+	DataReferencia string             `json:"data_referencia"`
+	Diario         PeriodoCaixaResumo `json:"diario"`
+	Semanal        PeriodoCaixaResumo `json:"semanal"`
+	Mensal         PeriodoCaixaResumo `json:"mensal"`
+}
+
 type ResumoCaixaResponse struct {
-	SaldoLiquido       float64               `json:"saldo_liquido"`
-	TotalEntradas      float64               `json:"total_entradas"`
-	TotalSaidas        float64               `json:"total_saidas"`
-	TotalMovimentacoes int                   `json:"total_movimentacoes"`
-	PorFormaPagamento  FormasPagamentoTotais `json:"por_forma_pagamento"`
-	Movimentacoes      []MovimentacaoCaixa   `json:"movimentacoes"`
+	Periodo             string                `json:"periodo"`
+	DataReferencia      string                `json:"data_referencia"`
+	BarbeiroIDFiltro    *int64                `json:"barbeiro_id_filtro,omitempty"`
+	SaldoLiquido        float64               `json:"saldo_liquido"`
+	TotalEntradas       float64               `json:"total_entradas"`
+	TotalSaidas         float64               `json:"total_saidas"`
+	TotalMovimentacoes  int                   `json:"total_movimentacoes"`
+	PorFormaPagamento   FormasPagamentoTotais `json:"por_forma_pagamento"`
+	FaturamentoPeriodos FaturamentoPeriodos   `json:"faturamento_periodos"`
+	Movimentacoes       []MovimentacaoCaixa   `json:"movimentacoes"`
 }

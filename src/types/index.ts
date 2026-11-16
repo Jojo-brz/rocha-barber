@@ -1,4 +1,4 @@
-export type UserRole = "admin" | "barbeiro";
+export type UserRole = "admin" | "ceo" | "barbeiro";
 
 export interface User {
   id: number | string;
@@ -13,6 +13,15 @@ export type PaymentMethod = "pix" | "dinheiro" | "cartao_credito" | "cartao_debi
 
 export type TransactionType = "entrada" | "saida";
 
+export type CaixaPeriod = "diario" | "semanal" | "mensal";
+
+export interface PeriodBreakdown {
+  entradas: number;
+  saidas: number;
+  saldoLiquido: number;
+  totalMovimentacoes: number;
+}
+
 export interface Transaction {
   id: number | string;
   type: TransactionType;
@@ -21,6 +30,7 @@ export interface Transaction {
   paymentMethod: PaymentMethod;
   barberId?: number | string | null;
   barberName: string;
+  date?: string;
   timestamp: string;
   createdAt?: string;
 }
@@ -51,6 +61,9 @@ export interface MaterialRequest {
 }
 
 export interface DailySummary {
+  periodo: CaixaPeriod;
+  dataReferencia: string;
+  barbeiroIdFiltro?: number | null;
   saldoLiquido: number;
   totalEntradas: number;
   totalSaidas: number;
@@ -60,6 +73,12 @@ export interface DailySummary {
     dinheiro: number;
     cartaoCredito: number;
     cartaoDebito: number;
+  };
+  faturamentoPeriodos: {
+    dataReferencia: string;
+    diario: PeriodBreakdown;
+    semanal: PeriodBreakdown;
+    mensal: PeriodBreakdown;
   };
   movimentacoes: Transaction[];
 }

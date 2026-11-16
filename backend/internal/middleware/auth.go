@@ -15,7 +15,11 @@ import (
 
 type contextKey string
 
-const authUserContextKey contextKey = "auth_user"
+const (
+	authUserContextKey contextKey = "auth_user"
+	userIDContextKey   contextKey = "user_id"
+	userRoleContextKey contextKey = "user_role"
+)
 
 type AuthUser struct {
 	ID    int64
@@ -71,11 +75,13 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), authUserContextKey, u)
+		ctx = context.WithValue(ctx, userIDContextKey, u.ID)
+		ctx = context.WithValue(ctx, userRoleContextKey, u.Papel)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// RequireAdmin restringe a rota exclusivamente para usuários com papel 'admin'.
+// RequireAdmin restringe a rota exclusivamente para usuários com papel 'admin' / 'ceo'.
 func (m *AuthMiddleware) RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := UsuarioAutenticado(r.Context())
@@ -83,7 +89,7 @@ func (m *AuthMiddleware) RequireAdmin(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, "Sessão não autenticada.")
 			return
 		}
-		if user.Papel != domain.PapelAdmin {
+		if !domain.IsAdminRole(user.Papel) {
 			writeJSONError(w, http.StatusForbidden, "Acesso restrito ao CEO/Administrador.")
 			return
 		}

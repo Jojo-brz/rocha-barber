@@ -2,6 +2,7 @@ import {
   User,
   UserRole,
   DailySummary,
+  CaixaPeriod,
   Transaction,
   Appointment,
   AppointmentStatus,
@@ -12,6 +13,27 @@ import {
   MaterialUrgency,
   MaterialStatus,
 } from "@/types";
+
+function formatTxDateTime(iso: string, serverDate?: string, serverTime?: string) {
+  const d = new Date(iso);
+  const valid = !isNaN(d.getTime());
+  const date =
+    serverDate ||
+    (valid
+      ? `${d.getDate().toString().padStart(2, "0")}/${(d.getMonth() + 1)
+          .toString()
+          .padStart(2, "0")}/${d.getFullYear()}`
+      : "--/--/----");
+  const timestamp =
+    serverTime ||
+    (valid
+      ? `${d.getHours().toString().padStart(2, "0")}:${d
+          .getMinutes()
+          .toString()
+          .padStart(2, "0")}`
+      : "Hoje");
+  return { date, timestamp };
+}
 
 const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 export const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
@@ -137,9 +159,25 @@ export const api = {
     }));
   },
 
-  // 2. Controle de Caixa Diário
-  async getCaixaSummary(): Promise<DailySummary> {
+  // 2. Controle de Caixa (Diário, Semanal e Mensal com sincronização de data e filtro RBAC por barbeiro)
+  async getCaixaSummary(
+    periodo: CaixaPeriod = "diario",
+    data?: string,
+    barbeiroId?: number | string
+  ): Promise<DailySummary> {
+    const params = new URLSearchParams();
+    params.set("periodo", periodo);
+    if (data && data.trim()) {
+      params.set("data", data.trim());
+    }
+    if (barbeiroId && String(barbeiroId) !== "todos") {
+      params.set("barbeiro_id", String(barbeiroId));
+    }
+
     const raw = await request<{
+      periodo?: CaixaPeriod;
+      data_referencia?: string;
+      barbeiro_id_filtro?: number | null;
       saldo_liquido: number;
       total_entradas: number;
       total_saidas: number;
@@ -150,6 +188,12 @@ export const api = {
         cartao_credito: number;
         cartao_debito: number;
       };
+      faturamento_periodos?: {
+        data_referencia?: string;
+        diario?: { entradas: number; saidas: number; saldo_liquido: number; total_movimentacoes: number };
+        semanal?: { entradas: number; saidas: number; saldo_liquido: number; total_movimentacoes: number };
+        mensal?: { entradas: number; saidas: number; saldo_liquido: number; total_movimentacoes: number };
+      };
       movimentacoes: Array<{
         id: number;
         barbeiro_id?: number | null;
@@ -159,17 +203,17 @@ export const api = {
         valor: number;
         forma_pagamento: PaymentMethod;
         criado_em: string;
+        data_formatada?: string;
+        hora_formatada?: string;
       }>;
-    }>("/api/caixa", { method: "GET" });
+    }>(`/api/caixa?${params.toString()}`, { method: "GET" });
 
     const movimentacoes: Transaction[] = (raw.movimentacoes || []).map((m) => {
-      const d = new Date(m.criado_em);
-      const timeStr = !isNaN(d.getTime())
-        ? `${d.getHours().toString().padStart(2, "0")}:${d
-            .getMinutes()
-            .toString()
-            .padStart(2, "0")}`
-        : "Hoje";
+      const { date, timestamp } = formatTxDateTime(
+        m.criado_em,
+        m.data_formatada,
+        m.hora_formatada
+      );
 
       return {
         id: m.id,
@@ -179,12 +223,30 @@ export const api = {
         paymentMethod: m.forma_pagamento,
         barberId: m.barbeiro_id,
         barberName: m.barbeiro_nome || "Geral/Caixa",
-        timestamp: timeStr,
+        date,
+        timestamp,
         createdAt: m.criado_em,
       };
     });
 
+    const mapBreakdown = (b?: {
+      entradas: number;
+      saidas: number;
+      saldo_liquido: number;
+      total_movimentacoes: number;
+    }) => ({
+      entradas: Number(b?.entradas || 0),
+      saidas: Number(b?.saidas || 0),
+      saldoLiquido: Number(b?.saldo_liquido || 0),
+      totalMovimentacoes: Number(b?.total_movimentacoes || 0),
+    });
+
+    const refDate = raw.data_referencia || data || "";
+
     return {
+      periodo: raw.periodo || periodo,
+      dataReferencia: refDate,
+      barbeiroIdFiltro: raw.barbeiro_id_filtro ?? null,
       saldoLiquido: Number(raw.saldo_liquido || 0),
       totalEntradas: Number(raw.total_entradas || 0),
       totalSaidas: Number(raw.total_saidas || 0),
@@ -194,6 +256,12 @@ export const api = {
         dinheiro: Number(raw.por_forma_pagamento?.dinheiro || 0),
         cartaoCredito: Number(raw.por_forma_pagamento?.cartao_credito || 0),
         cartaoDebito: Number(raw.por_forma_pagamento?.cartao_debito || 0),
+      },
+      faturamentoPeriodos: {
+        dataReferencia: raw.faturamento_periodos?.data_referencia || refDate,
+        diario: mapBreakdown(raw.faturamento_periodos?.diario),
+        semanal: mapBreakdown(raw.faturamento_periodos?.semanal),
+        mensal: mapBreakdown(raw.faturamento_periodos?.mensal),
       },
       movimentacoes,
     };
@@ -205,27 +273,29 @@ export const api = {
     valor: number;
     forma_pagamento: PaymentMethod;
     barbeiro_id?: number | null;
+    data?: string;
   }): Promise<Transaction> {
     const raw = await request<{
       id: number;
       barbeiro_id?: number;
+      barbeiro_nome?: string;
       tipo: TransactionType;
       descricao: string;
       valor: number;
       forma_pagamento: PaymentMethod;
       criado_em: string;
+      data_formatada?: string;
+      hora_formatada?: string;
     }>("/api/caixa", {
       method: "POST",
       body: JSON.stringify(payload),
     });
 
-    const d = new Date(raw.criado_em);
-    const timeStr = !isNaN(d.getTime())
-      ? `${d.getHours().toString().padStart(2, "0")}:${d
-          .getMinutes()
-          .toString()
-          .padStart(2, "0")}`
-      : "Agora";
+    const { date: dateStr, timestamp: timeStr } = formatTxDateTime(
+      raw.criado_em,
+      raw.data_formatada,
+      raw.hora_formatada
+    );
 
     return {
       id: raw.id,
@@ -234,7 +304,8 @@ export const api = {
       amount: Number(raw.valor),
       paymentMethod: raw.forma_pagamento,
       barberId: raw.barbeiro_id,
-      barberName: "Registrado",
+      barberName: raw.barbeiro_nome || "Registrado",
+      date: dateStr,
       timestamp: timeStr,
       createdAt: raw.criado_em,
     };
@@ -246,7 +317,9 @@ export const api = {
     data?: string
   ): Promise<Appointment[]> {
     const params = new URLSearchParams();
-    if (barbeiroId) params.set("barbeiro_id", String(barbeiroId));
+    if (barbeiroId && String(barbeiroId) !== "todos") {
+      params.set("barbeiro_id", String(barbeiroId));
+    }
     if (data) params.set("data", data);
 
     const qs = params.toString();
@@ -298,6 +371,7 @@ export const api = {
     const raw = await request<{
       id: number;
       barbeiro_id: number;
+      barbeiro_nome?: string;
       cliente_nome: string;
       servico: string;
       data_hora: string;
@@ -314,7 +388,7 @@ export const api = {
       service: raw.servico,
       time: raw.hora_formatada || "12:00",
       barberId: raw.barbeiro_id,
-      barberName: "Barbeiro",
+      barberName: raw.barbeiro_nome || "Barbeiro",
       status: raw.status,
     };
   },
@@ -346,6 +420,12 @@ export const api = {
       barberName: raw.barbeiro_nome || "Barbeiro",
       status: raw.status,
     };
+  },
+
+  async deletarAgendamento(id: number | string): Promise<void> {
+    await request(`/api/agendamentos/${id}`, {
+      method: "DELETE",
+    });
   },
 
   // 4. Pedidos de Materiais (Neon: pedidos_materiais)

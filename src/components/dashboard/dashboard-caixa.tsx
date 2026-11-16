@@ -10,6 +10,7 @@ import {
   PaymentMethod,
   TransactionType,
   DailySummary,
+  CaixaPeriod,
   UserRole,
   MaterialUrgency,
 } from "@/types";
@@ -42,6 +43,7 @@ import {
   Check,
   CheckCircle2,
   XCircle,
+  Trash2,
 } from "lucide-react";
 
 function getLocalDateISO(date: Date = new Date()): string {
@@ -50,6 +52,42 @@ function getLocalDateISO(date: Date = new Date()): string {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
+
+function parseLocalDate(isoDate: string): Date | null {
+  const parts = isoDate.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function formatDateISOToBR(isoDate: string): string {
+  const d = parseLocalDate(isoDate);
+  if (!d) return isoDate;
+  return d.toLocaleDateString("pt-BR");
+}
+
+function getWeekRangeLabel(isoDate: string): string {
+  const d = parseLocalDate(isoDate) || new Date();
+  const day = d.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diffToMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (dt: Date) =>
+    `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`;
+  return `${fmt(monday)} a ${fmt(sunday)}`;
+}
+
+function getMonthLabel(isoDate: string): string {
+  const d = parseLocalDate(isoDate) || new Date();
+  return d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+}
+
+const PERIOD_LABELS: Record<CaixaPeriod, string> = {
+  diario: "Diário",
+  semanal: "Semanal",
+  mensal: "Mensal",
+};
 
 function parseCurrencyInput(raw: string): number {
   const cleaned = raw.trim().replace(/[^\d.,-]/g, "");
@@ -72,15 +110,28 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   currentUser,
   onLogout,
 }) => {
-  const isCEO = currentUser.role === "admin";
+  const isCEO = currentUser.role === "admin" || currentUser.role === "ceo";
+
+  // Estados de período, data sincronizada e filtro de barbeiro (exclusivo CEO)
+  const [caixaPeriod, setCaixaPeriod] = useState<CaixaPeriod>("diario");
+  const [caixaDateRef, setCaixaDateRef] = useState<string>(() => getLocalDateISO());
+  const [ceoBarberFilter, setCeoBarberFilter] = useState<string>("todos");
 
   // Estados de dados da API
   const [caixaData, setCaixaData] = useState<DailySummary>({
+    periodo: "diario",
+    dataReferencia: getLocalDateISO(),
     saldoLiquido: 0,
     totalEntradas: 0,
     totalSaidas: 0,
     totalMovimentacoes: 0,
     porFormaPagamento: { pix: 0, dinheiro: 0, cartaoCredito: 0, cartaoDebito: 0 },
+    faturamentoPeriodos: {
+      dataReferencia: getLocalDateISO(),
+      diario: { entradas: 0, saidas: 0, saldoLiquido: 0, totalMovimentacoes: 0 },
+      semanal: { entradas: 0, saidas: 0, saldoLiquido: 0, totalMovimentacoes: 0 },
+      mensal: { entradas: 0, saidas: 0, saldoLiquido: 0, totalMovimentacoes: 0 },
+    },
     movimentacoes: [],
   });
 
@@ -103,6 +154,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [txType, setTxType] = useState<TransactionType>("entrada");
   const [amountInput, setAmountInput] = useState<string>("");
   const [descInput, setDescInput] = useState<string>("");
+  const [txDateInput, setTxDateInput] = useState<string>(() => getLocalDateISO());
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("pix");
   const [selectedBarberId, setSelectedBarberId] = useState<number | string>(currentUser.id);
   const [isSubmittingTx, setIsSubmittingTx] = useState<boolean>(false);
@@ -130,7 +182,15 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [isTeamModalOpen, setIsTeamModalOpen] = useState<boolean>(false);
   const [editingTeamMemberId, setEditingTeamMemberId] = useState<number | null>(null);
 
-  // Função central de carregamento de dados da API Neon
+  // Função auxiliar para sincronizar data de referência do caixa, agenda e novos lançamentos
+  const syncReferenceDate = (newDate: string) => {
+    const target = newDate || getLocalDateISO();
+    setCaixaDateRef(target);
+    setAgendaDateFilter(target);
+    setTxDateInput(target);
+  };
+
+  // Função central de carregamento de dados da API Neon (com isolamento RBAC)
   const carregarDados = useCallback(async (silencioso = false) => {
     if (!silencioso) setIsLoading(true);
     setIsRefreshing(true);
@@ -138,11 +198,17 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
     try {
       const dateQuery = agendaDateFilter || "todos";
+      const effectiveBarberFilter = isCEO
+        ? ceoBarberFilter !== "todos"
+          ? ceoBarberFilter
+          : undefined
+        : currentUser.id;
+
       const [caixaRes, agendamentosRes, materiaisRes, equipeRes] = await Promise.all([
-        api.getCaixaSummary(),
-        api.getAgendamentos(isCEO ? undefined : currentUser.id, dateQuery),
+        api.getCaixaSummary(caixaPeriod, caixaDateRef, effectiveBarberFilter),
+        api.getAgendamentos(effectiveBarberFilter, dateQuery),
         api.getMateriais(),
-        isCEO ? api.getUsuariosAdmin() : api.getEquipe(),
+        isCEO ? api.getUsuariosAdmin() : Promise.resolve([currentUser]),
       ]);
 
       setCaixaData(caixaRes);
@@ -168,7 +234,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [currentUser, isCEO, agendaDateFilter]);
+  }, [currentUser, isCEO, agendaDateFilter, caixaPeriod, caixaDateRef, ceoBarberFilter]);
 
   useEffect(() => {
     carregarDados();
@@ -183,6 +249,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       return;
     }
 
+    const targetBarberId = isCEO
+      ? selectedBarberId
+        ? Number(selectedBarberId)
+        : Number(currentUser.id)
+      : Number(currentUser.id);
+
     setIsSubmittingTx(true);
     try {
       await api.criarMovimentacao({
@@ -190,7 +262,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         descricao: descInput.trim() || (txType === "entrada" ? "Serviço de Bancada" : "Despesa Operacional"),
         valor: val,
         forma_pagamento: paymentMethod,
-        barbeiro_id: selectedBarberId ? Number(selectedBarberId) : null,
+        barbeiro_id: targetBarberId,
+        data: txDateInput || getLocalDateISO(),
       });
 
       setIsTxModalOpen(false);
@@ -250,14 +323,25 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     doc.setFontSize(17);
     doc.text("ROCHA BARBERSHOP", margin, 14);
 
+    const periodTitle =
+      caixaPeriod === "semanal"
+        ? `SEMANAL (${getWeekRangeLabel(caixaDateRef)})`
+        : caixaPeriod === "mensal"
+        ? `MENSAL (${getMonthLabel(caixaDateRef).toUpperCase()})`
+        : `DIARIO (${formatDateISOToBR(caixaDateRef)})`;
+
     doc.setTextColor(245, 158, 11);
     doc.setFontSize(10);
-    doc.text("FECHAMENTO DE CAIXA DIARIO - RELATORIO PARA O CEO", margin, 21);
+    doc.text(`FECHAMENTO DE CAIXA ${periodTitle} - RELATORIO PARA O CEO`, margin, 21);
 
     doc.setTextColor(203, 213, 225);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.text(`Data: ${dateStr} as ${timeStr}  |  Emitido por: ${currentUser.name}`, margin, 28);
+    doc.text(
+      `Ref.: ${formatDateISOToBR(caixaDateRef)}  |  Emitido: ${dateStr} as ${timeStr}  |  Por: ${currentUser.name}`,
+      margin,
+      28
+    );
 
     let y = 43;
 
@@ -340,6 +424,50 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
     y += 23;
 
+    // 2B. Divisão de Faturamento (Diário / Semanal / Mensal)
+    const fp = caixaData.faturamentoPeriodos;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Divisao de Faturamento (Diario / Semanal / Mensal)", margin, y);
+    y += 4;
+
+    const periodCols = [
+      {
+        title: `Diario (${formatDateISOToBR(caixaDateRef)})`,
+        entradas: fp.diario.entradas,
+        saldo: fp.diario.saldoLiquido,
+      },
+      {
+        title: `Semanal (${getWeekRangeLabel(caixaDateRef)})`,
+        entradas: fp.semanal.entradas,
+        saldo: fp.semanal.saldoLiquido,
+      },
+      {
+        title: `Mensal (${getMonthLabel(caixaDateRef)})`,
+        entradas: fp.mensal.entradas,
+        saldo: fp.mensal.saldoLiquido,
+      },
+    ];
+    periodCols.forEach((col, idx) => {
+      const x = margin + idx * (cardWidth + cardGap);
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(x, y, cardWidth, 16, 1.5, 1.5, "FD");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(col.title.slice(0, 30), x + 3, y + 5.2);
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Fat.: ${formatCurrency(col.entradas)}`, x + 3, y + 10.5);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Liquido: ${formatCurrency(col.saldo)}`, x + 3, y + 14.3);
+    });
+    y += 23;
+
     // 3. Resumo por Profissional
     const byBarber = new Map<
       string,
@@ -407,14 +535,15 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       doc.setFillColor(15, 23, 42);
       doc.rect(margin, y, contentWidth, 7.5, "F");
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
+      doc.setFontSize(7.5);
       doc.setTextColor(255, 255, 255);
-      doc.text("Hora", margin + 2.5, y + 5.2);
-      doc.text("Tipo", margin + 18, y + 5.2);
-      doc.text("Descricao", margin + 37, y + 5.2);
-      doc.text("Profissional", margin + 102, y + 5.2);
-      doc.text("Pagamento", margin + 137, y + 5.2);
-      doc.text("Valor", margin + contentWidth - 2.5, y + 5.2, { align: "right" });
+      doc.text("Data", margin + 2, y + 5.2);
+      doc.text("Hora", margin + 22, y + 5.2);
+      doc.text("Tipo", margin + 34, y + 5.2);
+      doc.text("Descricao", margin + 49, y + 5.2);
+      doc.text("Profissional", margin + 103, y + 5.2);
+      doc.text("Pagamento", margin + 135, y + 5.2);
+      doc.text("Valor", margin + contentWidth - 2, y + 5.2, { align: "right" });
       y += 7.5;
     };
 
@@ -438,11 +567,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       doc.setFont("helvetica", "italic");
       doc.setFontSize(9);
       doc.setTextColor(100, 116, 139);
-      doc.text("Nenhuma movimentacao registrada neste dia.", margin + 3, y + 8);
+      doc.text("Nenhuma movimentacao registrada neste periodo.", margin + 3, y + 8);
       y += 12;
     } else {
       caixaData.movimentacoes.forEach((tx, idx) => {
-        const descLines = doc.splitTextToSize(tx.description || "-", 62) as string[];
+        const descLines = doc.splitTextToSize(tx.description || "-", 51) as string[];
         const rowHeight = Math.max(7, descLines.length * 4.2 + 2.8);
 
         if (y + rowHeight > pageHeight - 18) {
@@ -459,30 +588,31 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         doc.line(margin, y + rowHeight, margin + contentWidth, y + rowHeight);
 
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(8);
+        doc.setFontSize(7.5);
         doc.setTextColor(71, 85, 105);
-        doc.text(tx.timestamp, margin + 2.5, y + 4.8);
+        doc.text(tx.date || formatDateISOToBR(caixaDateRef), margin + 2, y + 4.8);
+        doc.text(tx.timestamp, margin + 22, y + 4.8);
 
         doc.setFont("helvetica", "bold");
         if (tx.type === "entrada") {
           doc.setTextColor(4, 120, 87);
-          doc.text("Entrada", margin + 18, y + 4.8);
+          doc.text("Entrada", margin + 34, y + 4.8);
         } else {
           doc.setTextColor(190, 18, 60);
-          doc.text("Saida", margin + 18, y + 4.8);
+          doc.text("Saida", margin + 34, y + 4.8);
         }
 
         doc.setFont("helvetica", "normal");
         doc.setTextColor(15, 23, 42);
-        doc.text(descLines, margin + 37, y + 4.8);
-        doc.text((tx.barberName || "Geral").slice(0, 19), margin + 102, y + 4.8);
-        doc.text(paymentLabel(tx.paymentMethod), margin + 137, y + 4.8);
+        doc.text(descLines, margin + 49, y + 4.8);
+        doc.text((tx.barberName || "Geral").slice(0, 17), margin + 103, y + 4.8);
+        doc.text(paymentLabel(tx.paymentMethod), margin + 135, y + 4.8);
 
         doc.setFont("helvetica", "bold");
         doc.setTextColor(tx.type === "entrada" ? 4 : 190, tx.type === "entrada" ? 120 : 18, tx.type === "entrada" ? 87 : 60);
         doc.text(
           `${tx.type === "entrada" ? "+" : "-"} ${formatCurrency(tx.amount)}`,
-          margin + contentWidth - 2.5,
+          margin + contentWidth - 2,
           y + 4.8,
           { align: "right" }
         );
@@ -508,8 +638,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       });
     }
 
-    const fileDate = getLocalDateISO(reportDate);
-    doc.save(`fechamento-caixa-rocha-${fileDate}.pdf`);
+    doc.save(`fechamento-caixa-${caixaPeriod}-${caixaDateRef}.pdf`);
   };
 
   // Handler para Novo Agendamento (POST /api/agendamentos)
@@ -521,6 +650,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     const [year, month, day] = baseDate.split("-").map(Number);
     const [hours, minutes] = timeInput.split(":").map(Number);
     const scheduleDate = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    const targetBarberId = isCEO ? Number(appBarberId) : Number(currentUser.id);
 
     setIsSubmittingApp(true);
     try {
@@ -528,7 +658,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         cliente_nome: clientNameInput.trim(),
         servico: serviceInput.trim(),
         data_hora: scheduleDate.toISOString(),
-        barbeiro_id: Number(appBarberId),
+        barbeiro_id: targetBarberId,
       });
 
       setIsAppModalOpen(false);
@@ -554,6 +684,19 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       await carregarDados(true);
     } catch (err: any) {
       alert(err.message || "Erro ao atualizar status do agendamento.");
+    } finally {
+      setUpdatingAppId(null);
+    }
+  };
+
+  // Handler para Excluir Agendamento (DELETE /api/agendamentos/{id})
+  const handleDeleteAppointment = async (id: number | string) => {
+    setUpdatingAppId(id);
+    try {
+      await api.deletarAgendamento(id);
+      await carregarDados(true);
+    } catch (err: any) {
+      alert(err.message || "Erro ao excluir agendamento.");
     } finally {
       setUpdatingAppId(null);
     }
@@ -717,7 +860,175 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           </div>
         )}
 
-        {/* 1. CARDS DE RESUMO DO CAIXA */}
+        {/* 0. SINCRONIZAÇÃO DE DATA, FILTRO DE VISÃO (RBAC) & DIVISÃO DE PERÍODO */}
+        <section className="mb-5 p-4 rounded-2xl bg-slate-900/60 border border-white/10 space-y-4">
+          {/* Cabeçalho de escopo RBAC: Visão Global / Filtro por Barbeiro (CEO) vs Visão Individual (Barbeiro) */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
+            <div className="flex items-center gap-2.5">
+              <span
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                  isCEO
+                    ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                    : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                }`}
+              >
+                {isCEO
+                  ? ceoBarberFilter === "todos"
+                    ? "👑 Faturamento Geral da Barbearia"
+                    : `🔎 Faturamento Individual: ${
+                        teamMembers.find((u) => String(u.id) === String(ceoBarberFilter))?.name ||
+                        "Profissional"
+                      }`
+                  : `💈 Meu Faturamento Individual (${currentUser.name})`}
+              </span>
+            </div>
+
+            {isCEO && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-amber-400" />
+                  Filtrar Profissional:
+                </label>
+                <select
+                  value={ceoBarberFilter}
+                  onChange={(e) => setCeoBarberFilter(e.target.value)}
+                  className="h-8 px-2.5 rounded-lg bg-slate-950 border border-white/15 text-xs font-semibold text-slate-100 focus:outline-none focus:border-amber-400"
+                >
+                  <option value="todos">Todos os Barbeiros (Consolidado Geral)</option>
+                  {teamMembers.map((u) => (
+                    <option key={u.id} value={String(u.id)}>
+                      {u.name} ({u.role === "admin" || u.role === "ceo" ? "CEO" : "Barbeiro"})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingTeamMemberId(null);
+                    setIsTeamModalOpen(true);
+                  }}
+                  className="h-8 px-3 rounded-lg bg-purple-600/25 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 text-xs font-bold flex items-center gap-1.5 transition-all"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  Gerenciar Equipe
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4" />
+                Data Sincronizada:
+              </span>
+              <input
+                type="date"
+                value={caixaDateRef}
+                onChange={(e) => syncReferenceDate(e.target.value)}
+                aria-label="Data de referência sincronizada"
+                className="h-8 px-2.5 rounded-lg bg-slate-950 border border-white/15 text-xs font-mono text-slate-100 focus:outline-none focus:border-amber-400"
+              />
+              <button
+                type="button"
+                onClick={() => syncReferenceDate(getLocalDateISO())}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                  caixaDateRef === getLocalDateISO()
+                    ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                    : "bg-slate-950 text-slate-400 border-white/10 hover:text-white"
+                }`}
+              >
+                Hoje
+              </button>
+            </div>
+
+            <div className="inline-flex items-center p-1 rounded-xl bg-slate-950/90 border border-white/10 self-start sm:self-auto">
+              {(["diario", "semanal", "mensal"] as CaixaPeriod[]).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setCaixaPeriod(p)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                    caixaPeriod === p
+                      ? "bg-amber-500 text-slate-950 shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {PERIOD_LABELS[p]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cards Comparativos: Faturamento Diário / Semanal / Mensal */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {(
+              [
+                {
+                  key: "diario" as CaixaPeriod,
+                  title: isCEO ? "Faturamento Diário" : "Meu Faturamento Diário",
+                  subtitle: formatDateISOToBR(caixaDateRef),
+                  stats: caixaData.faturamentoPeriodos.diario,
+                },
+                {
+                  key: "semanal" as CaixaPeriod,
+                  title: isCEO ? "Faturamento Semanal" : "Meu Faturamento Semanal",
+                  subtitle: getWeekRangeLabel(caixaDateRef),
+                  stats: caixaData.faturamentoPeriodos.semanal,
+                },
+                {
+                  key: "mensal" as CaixaPeriod,
+                  title: isCEO ? "Faturamento Mensal" : "Meu Faturamento Mensal",
+                  subtitle: getMonthLabel(caixaDateRef),
+                  stats: caixaData.faturamentoPeriodos.mensal,
+                },
+              ]
+            ).map((item) => {
+              const isSelected = caixaPeriod === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setCaixaPeriod(item.key)}
+                  className={`text-left p-3.5 rounded-xl border transition-all ${
+                    isSelected
+                      ? "bg-slate-950 border-amber-500/50 ring-1 ring-amber-500/30"
+                      : "bg-slate-950/50 border-white/5 hover:border-white/15"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                      {item.title}
+                    </span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                        isSelected
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-white/5 text-slate-400"
+                      }`}
+                    >
+                      {item.subtitle}
+                    </span>
+                  </div>
+                  <div className="text-lg font-extrabold text-white">
+                    R$ {item.stats.entradas.toFixed(2).replace(".", ",")}
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+                    <span>
+                      Líq.:{" "}
+                      <strong className="text-emerald-400">
+                        R$ {item.stats.saldoLiquido.toFixed(2).replace(".", ",")}
+                      </strong>
+                    </span>
+                    <span className="font-mono">{item.stats.totalMovimentacoes} mov.</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* 1. CARDS DE RESUMO DO CAIXA ({PERIOD_LABELS[caixaPeriod]}) */}
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6 animate-pulse">
             <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />
@@ -726,14 +1037,15 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           </div>
         ) : (
           <section className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6">
-            {/* Card 1: Saldo Líquido do Dia */}
+            {/* Card 1: Saldo Líquido do Período */}
             <div className="relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-[#0c1815] via-[#0f172a] to-[#07090e] border border-emerald-500/30 shadow-emerald-glow">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                  <Wallet className="w-4 h-4" /> Saldo Líquido do Dia
+                  <Wallet className="w-4 h-4" />{" "}
+                  {isCEO ? "Saldo Líquido" : "Meu Saldo Líquido"} ({PERIOD_LABELS[caixaPeriod]})
                 </span>
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-medium">
-                  Neon PostgreSQL
+                  {formatDateISOToBR(caixaDateRef)}
                 </span>
               </div>
               <div className="text-3xl font-extrabold text-white tracking-tight">
@@ -753,7 +1065,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" /> Total Entradas
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />{" "}
+                  {isCEO ? "Total Entradas" : "Minhas Entradas"}
                 </span>
                 <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
                   +{caixaData.totalMovimentacoes} mov.
@@ -763,7 +1076,9 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 R$ {caixaData.totalEntradas.toFixed(2).replace(".", ",")}
               </div>
               <p className="text-[11px] text-slate-400 mt-2">
-                Serviços de corte, barba e produtos registrados
+                {isCEO
+                  ? "Serviços de corte, barba e produtos registrados"
+                  : "Seus atendimentos e serviços lançados no período"}
               </p>
             </div>
 
@@ -771,7 +1086,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                  <TrendingDown className="w-4 h-4 text-rose-400" /> Despesas & Insumos
+                  <TrendingDown className="w-4 h-4 text-rose-400" />{" "}
+                  {isCEO ? "Despesas & Insumos" : "Minhas Saídas"}
                 </span>
                 <span className="text-xs font-mono text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-md">
                   Saídas
@@ -781,7 +1097,9 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 R$ {caixaData.totalSaidas.toFixed(2).replace(".", ",")}
               </div>
               <p className="text-[11px] text-slate-400 mt-2">
-                Gastos operacionais e retiradas da barbearia
+                {isCEO
+                  ? "Gastos operacionais e retiradas da barbearia"
+                  : "Suas despesas ou retiradas vinculadas ao seu perfil"}
               </p>
             </div>
           </section>
@@ -836,6 +1154,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           <button
             onClick={() => {
               setTxType("entrada");
+              setTxDateInput(caixaDateRef || getLocalDateISO());
+              if (isCEO && ceoBarberFilter !== "todos") {
+                setSelectedBarberId(ceoBarberFilter);
+              } else {
+                setSelectedBarberId(currentUser.id);
+              }
               setIsTxModalOpen(true);
             }}
             className="p-3.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all shadow-sm"
@@ -847,6 +1171,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           <button
             onClick={() => {
               setTxType("saida");
+              setTxDateInput(caixaDateRef || getLocalDateISO());
+              if (isCEO && ceoBarberFilter !== "todos") {
+                setSelectedBarberId(ceoBarberFilter);
+              } else {
+                setSelectedBarberId(currentUser.id);
+              }
               setIsTxModalOpen(true);
             }}
             className="p-3.5 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all shadow-sm"
@@ -862,6 +1192,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   ? agendaDateFilter
                   : getLocalDateISO()
               );
+              if (isCEO && ceoBarberFilter !== "todos") {
+                setAppBarberId(ceoBarberFilter);
+              } else {
+                setAppBarberId(currentUser.id);
+              }
               setIsAppModalOpen(true);
             }}
             className="p-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-white/10 text-slate-200 font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all shadow-sm"
@@ -899,7 +1234,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             }`}
           >
             <Wallet className="w-4 h-4" />
-            Movimentações do Caixa ({caixaData.movimentacoes.length})
+            {isCEO ? "Movimentações do Caixa" : "Meus Lançamentos"} ({caixaData.movimentacoes.length})
           </button>
 
           <button
@@ -911,7 +1246,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             }`}
           >
             <Calendar className="w-4 h-4" />
-            Agenda ({appointments.length})
+            {isCEO ? "Agenda" : "Minha Agenda"} ({appointments.length})
           </button>
 
           <button
@@ -948,8 +1283,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           <div className="space-y-2.5">
             {caixaData.movimentacoes.length === 0 ? (
               <div className="p-8 text-center rounded-2xl bg-slate-900/40 border border-white/5">
-                <p className="text-sm text-slate-400">Nenhuma movimentação registrada no caixa.</p>
-                <p className="text-xs text-slate-500 mt-1">Utilize os botões acima para lançar atendimentos ou despesas.</p>
+                <p className="text-sm text-slate-400">
+                  Nenhuma movimentação registrada no período ({PERIOD_LABELS[caixaPeriod].toLowerCase()}) para {formatDateISOToBR(caixaDateRef)}.
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Troque o período (Diário / Semanal / Mensal), altere a data sincronizada ou lance uma movimentação acima.
+                </p>
               </div>
             ) : (
               caixaData.movimentacoes.map((tx) => (
@@ -971,11 +1310,14 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                       <p className="text-sm font-semibold text-slate-200">
                         {tx.description}
                       </p>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+                      <div className="flex items-center flex-wrap gap-2 text-[11px] text-slate-400 mt-0.5">
                         <span className="text-amber-300/90 font-medium">
                           {tx.barberName}
                         </span>
                         <span>•</span>
+                        <span className="font-mono text-slate-300 bg-white/5 px-1.5 py-0.5 rounded">
+                          {tx.date || formatDateISOToBR(caixaDateRef)}
+                        </span>
                         <span className="font-mono text-slate-500">{tx.timestamp}</span>
                         <span>•</span>
                         <span className="px-1.5 py-0.2 rounded bg-white/5 text-slate-300 text-[10px] uppercase font-mono">
@@ -1130,6 +1472,16 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                           </button>
                         </>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAppointment(app.id)}
+                        disabled={isUpdating}
+                        title="Excluir agendamento"
+                        className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-rose-950/40 border border-white/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 transition-all disabled:opacity-40"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -1362,22 +1714,43 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 />
               </div>
 
-              {/* Barbeiro Responsável */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Profissional (Cadastrado no Neon)
-                </label>
-                <select
-                  value={selectedBarberId}
-                  onChange={(e) => setSelectedBarberId(e.target.value)}
-                  className="w-full h-11 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
-                >
-                  {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name} ({u.role})
-                    </option>
-                  ))}
-                </select>
+              {/* Data do Lançamento & Barbeiro Responsável */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Data do Lançamento
+                  </label>
+                  <input
+                    type="date"
+                    value={txDateInput}
+                    onChange={(e) => setTxDateInput(e.target.value)}
+                    required
+                    className="w-full h-11 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm font-mono text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Profissional (Neon)
+                  </label>
+                  {isCEO ? (
+                    <select
+                      value={selectedBarberId}
+                      onChange={(e) => setSelectedBarberId(e.target.value)}
+                      className="w-full h-11 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
+                    >
+                      {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full h-11 px-3 rounded-xl bg-slate-950/70 border border-white/10 text-sm text-amber-300 font-semibold flex items-center">
+                      💈 {currentUser.name}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Forma de Pagamento */}
@@ -1508,17 +1881,23 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
                   Barbeiro Designado
                 </label>
-                <select
-                  value={appBarberId}
-                  onChange={(e) => setAppBarberId(e.target.value)}
-                  className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
-                >
-                  {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name} ({u.role})
-                    </option>
-                  ))}
-                </select>
+                {isCEO ? (
+                  <select
+                    value={appBarberId}
+                    onChange={(e) => setAppBarberId(e.target.value)}
+                    className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
+                  >
+                    {(teamMembers.length > 0 ? teamMembers : [currentUser]).map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.role})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full h-10 px-3 rounded-xl bg-slate-950/70 border border-white/10 text-sm text-amber-300 font-semibold flex items-center">
+                    💈 {currentUser.name}
+                  </div>
+                )}
               </div>
 
               <button
@@ -1627,20 +2006,22 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         </div>
       )}
 
-      {/* MODAL 4: GESTÃO DE EQUIPE (CEO - POST /api/admin/usuarios) */}
-      <TeamManagementModal
-        isOpen={isTeamModalOpen}
-        onClose={() => {
-          setIsTeamModalOpen(false);
-          setEditingTeamMemberId(null);
-        }}
-        users={teamMembers}
-        initialEditUserId={editingTeamMemberId}
-        onAddUser={handleAddTeamMember}
-        onDeleteUser={handleDeleteTeamMember}
-        onEditUser={handleEditTeamMember}
-        onRefresh={() => carregarDados(true)}
-      />
+      {/* MODAL 4: GESTÃO DE EQUIPE (EXCLUSIVO CEO - POST /api/admin/usuarios) */}
+      {isCEO && (
+        <TeamManagementModal
+          isOpen={isTeamModalOpen}
+          onClose={() => {
+            setIsTeamModalOpen(false);
+            setEditingTeamMemberId(null);
+          }}
+          users={teamMembers}
+          initialEditUserId={editingTeamMemberId}
+          onAddUser={handleAddTeamMember}
+          onDeleteUser={handleDeleteTeamMember}
+          onEditUser={handleEditTeamMember}
+          onRefresh={() => carregarDados(true)}
+        />
+      )}
     </div>
   );
 };

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -17,37 +16,33 @@ import (
 	"github.com/barbearia-rocha/backend/internal/middleware"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 )
 
-// buildAllowedOrigins monta a lista explícita de origens CORS autorizadas (FRONTEND_URL, ALLOWED_ORIGINS + localhost).
-func buildAllowedOrigins() []string {
-	seen := map[string]struct{}{}
-	origins := make([]string, 0, 6)
+// enableCORS libera origens da Vercel (*.vercel.app), domínios customizados e localhost,
+// respondendo imediatamente ao preflight OPTIONS antes de qualquer middleware de autenticação.
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 
-	addOrigin := func(raw string) {
-		trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
-		if trimmed == "" {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Origin, Accept, Authorization, Content-Type, X-CSRF-Token, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// Responde imediatamente com 200 OK para a verificação preflight do navegador
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if _, exists := seen[trimmed]; !exists {
-			seen[trimmed] = struct{}{}
-			origins = append(origins, trimmed)
-		}
-	}
 
-	// Origens locais de desenvolvimento
-	addOrigin("http://localhost:3000")
-	addOrigin("http://127.0.0.1:3000")
-
-	for _, envVar := range []string{os.Getenv("FRONTEND_URL"), os.Getenv("ALLOWED_ORIGINS")} {
-		for _, item := range strings.Split(envVar, ",") {
-			addOrigin(item)
-		}
-	}
-
-	return origins
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -86,25 +81,15 @@ func main() {
 	// 3. Inicialização do Router Chi
 	r := chi.NewRouter()
 
+	// Middleware de CORS no topo do roteador (antes de qualquer rota ou autenticação)
+	r.Use(enableCORS)
+
 	// Middlewares essenciais
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Timeout(30 * time.Second))
-
-	allowedOrigins := buildAllowedOrigins()
-	log.Printf("🔒 CORS autorizado para origens: %v", allowedOrigins)
-
-	// CORS restrito às origens configuradas (autenticação via header Bearer token, sem cookies)
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
-		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: false,
-		MaxAge:           300, // 5 minutos
-	}))
 
 	// Rota pública de Healthcheck
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +117,7 @@ func main() {
 			r.Get("/agendamentos", agendamentoHandler.ListarAgendamentos)
 			r.Post("/agendamentos", agendamentoHandler.CriarAgendamento)
 			r.Patch("/agendamentos/{id}", agendamentoHandler.AtualizarStatusAgendamento)
+			r.Delete("/agendamentos/{id}", agendamentoHandler.DeletarAgendamento)
 
 			// Pedidos de Insumos & Materiais (solicitação aberta à bancada)
 			r.Get("/materiais", materialHandler.ListarMateriais)
@@ -156,7 +142,7 @@ func main() {
 	addr := fmt.Sprintf(":%s", port)
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      r,
+		Handler:      enableCORS(r),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
