@@ -3,7 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,9 +34,6 @@ func (h *AgendamentoHandler) formatHoraLocal(t time.Time) string {
 func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	conditions := make([]string, 0, 2)
-	args := make([]any, 0, 2)
-
 	// Isolamento RBAC: barbeiros veem apenas os próprios agendamentos; CEO vê todos ou filtra por ?barbeiro_id=
 	caller, hasCaller := middleware.UsuarioAutenticado(r.Context())
 	if !hasCaller {
@@ -45,9 +42,10 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	var filtroBarbeiroID *int64
 	if !domain.IsAdminRole(caller.Papel) {
-		args = append(args, caller.ID)
-		conditions = append(conditions, fmt.Sprintf("a.barbeiro_id = $%d", len(args)))
+		ownID := caller.ID
+		filtroBarbeiroID = &ownID
 	} else {
 		barbeiroIDStr := strings.TrimSpace(r.URL.Query().Get("barbeiro_id"))
 		if barbeiroIDStr != "" && strings.ToLower(barbeiroIDStr) != "todos" {
@@ -57,11 +55,11 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 				json.NewEncoder(w).Encode(map[string]string{"error": "barbeiro_id inválido"})
 				return
 			}
-			args = append(args, barbeiroID)
-			conditions = append(conditions, fmt.Sprintf("a.barbeiro_id = $%d", len(args)))
+			filtroBarbeiroID = &barbeiroID
 		}
 	}
 
+	var filtroData *string
 	dataParam := strings.TrimSpace(r.URL.Query().Get("data"))
 	if dataParam != "" && dataParam != "todos" {
 		if _, err := time.Parse("2006-01-02", dataParam); err != nil {
@@ -69,29 +67,25 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 			json.NewEncoder(w).Encode(map[string]string{"error": "Parâmetro data inválido. Use YYYY-MM-DD"})
 			return
 		}
-		args = append(args, dataParam)
-		conditions = append(
-			conditions,
-			fmt.Sprintf("(a.data_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date = $%d::date", len(args)),
-		)
+		filtroData = &dataParam
 	}
 
-	query := `
+	const query = `
 		SELECT 
 			a.id, a.barbeiro_id, COALESCE(u.nome, 'Barbeiro') as barbeiro_nome,
 			a.cliente_nome, a.servico, a.data_hora, a.status, a.criado_em
 		FROM agendamentos a
 		LEFT JOIN usuarios u ON a.barbeiro_id = u.id
+		WHERE ($1::bigint IS NULL OR a.barbeiro_id = $1)
+		  AND ($2::text IS NULL OR (a.data_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date = $2::date)
+		ORDER BY a.data_hora ASC;
 	`
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-	query += " ORDER BY a.data_hora ASC;"
 
-	rows, err := h.db.Pool.Query(r.Context(), query, args...)
+	rows, err := h.db.Pool.Query(r.Context(), query, filtroBarbeiroID, filtroData)
 	if err != nil {
+		log.Printf("[AgendamentoHandler.ListarAgendamentos] erro query: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar agendamentos no Neon: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar agendamentos"})
 		return
 	}
 	defer rows.Close()
@@ -110,8 +104,9 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 			&a.CriadoEm,
 		)
 		if err != nil {
+			log.Printf("[AgendamentoHandler.ListarAgendamentos] erro scan: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao mapear agendamento: " + err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao mapear agendamento"})
 			return
 		}
 
@@ -204,7 +199,7 @@ func (h *AgendamentoHandler) CriarAgendamento(w http.ResponseWriter, r *http.Req
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao criar agendamento no Neon: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao criar agendamento: " + err.Error()})
 		return
 	}
 

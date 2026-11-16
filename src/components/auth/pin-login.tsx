@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { User } from "@/types";
-import { api } from "@/services/api";
+import { api, getCachedLogo } from "@/services/api";
 import { Delete, ShieldCheck, AlertCircle, Scissors, Loader2 } from "lucide-react";
 
 interface PinLoginProps {
@@ -14,6 +14,15 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onLoginSuccess }) => {
   const [isError, setIsError] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [logoUrl, setLogoUrl] = useState<string>("");
+
+  useEffect(() => {
+    const cached = getCachedLogo();
+    if (cached) setLogoUrl(cached);
+    api.getLogoBarbearia().then((remoteLogo) => {
+      setLogoUrl(remoteLogo);
+    });
+  }, []);
 
   const handleDigit = useCallback(
     (digit: string) => {
@@ -87,10 +96,18 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onLoginSuccess }) => {
       <div className="pointer-events-none absolute -top-32 left-1/2 -translate-x-1/2 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl" />
       <div className="pointer-events-none absolute -bottom-32 left-1/2 -translate-x-1/2 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl" />
 
-      {/* Header com Branding Rocha */}
-      <header className="w-full max-w-sm mb-8 flex flex-col items-center text-center z-10">
-        <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-400/20 to-amber-600/10 border border-amber-500/30 text-amber-400 shadow-glow mb-4">
-          <Scissors className="w-7 h-7 transform -rotate-45" />
+      {/* Header com Branding Rocha e Ícone Dinâmico */}
+      <header className="w-full max-w-sm mb-8 flex flex-col items-center text-center z-10 animate-fade-up">
+        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400/20 to-amber-600/10 border border-amber-500/30 text-amber-400 shadow-glow mb-4 overflow-hidden animate-float-slow">
+          {logoUrl ? (
+            <img
+              src={logoUrl}
+              alt="Ícone Barbearia Rocha"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <Scissors className="w-7 h-7 transform -rotate-45" />
+          )}
         </div>
         <h1 className="text-2xl font-bold tracking-wider uppercase text-white font-serif">
           Barbearia Rocha
@@ -101,7 +118,7 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onLoginSuccess }) => {
       </header>
 
       {/* Centro: Display do PIN e Slots */}
-      <div className="w-full max-w-sm flex flex-col items-center z-10">
+      <div className="w-full max-w-sm flex flex-col items-center z-10 animate-fade-up">
         <div className="mb-3 text-center">
           <p className="text-sm font-medium text-slate-300">
             Digite seu PIN de 4 dígitos

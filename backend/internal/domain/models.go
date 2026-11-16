@@ -198,3 +198,12 @@ type ResumoCaixaResponse struct {
 	FaturamentoPeriodos FaturamentoPeriodos   `json:"faturamento_periodos"`
 	Movimentacoes       []MovimentacaoCaixa   `json:"movimentacoes"`
 }
+
+type LogoConfigResponse struct {
+	LogoURL      string     `json:"logo_url"`
+	AtualizadoEm *time.Time `json:"atualizado_em,omitempty"`
+}
+
+type AtualizarLogoRequest struct {
+	LogoURL string `json:"logo_url"`
+}

@@ -42,11 +42,31 @@ const config: Config = {
         pulseSubtle: {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.6" },
-        }
+        },
+        fadeIn: {
+          "0%": { opacity: "0" },
+          "100%": { opacity: "1" },
+        },
+        fadeUp: {
+          "0%": { opacity: "0", transform: "translateY(14px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        scaleIn: {
+          "0%": { opacity: "0", transform: "scale(0.95)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        floatSlow: {
+          "0%, 100%": { transform: "translateY(0px)" },
+          "50%": { transform: "translateY(-5px)" },
+        },
       },
       animation: {
         shake: "shake 0.4s ease-in-out",
         "pulse-subtle": "pulseSubtle 2s infinite ease-in-out",
+        fadeIn: "fadeIn 0.3s ease-out forwards",
+        "fade-up": "fadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "scale-in": "scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "float-slow": "floatSlow 4s ease-in-out infinite",
       }
     },
   },

@@ -14,7 +14,7 @@ import {
   UserRole,
   MaterialUrgency,
 } from "@/types";
-import { api } from "@/services/api";
+import { api, getCachedLogo } from "@/services/api";
 import { TeamManagementModal } from "./team-management-modal";
 import { jsPDF } from "jspdf";
 import {
@@ -44,7 +44,67 @@ import {
   CheckCircle2,
   XCircle,
   Trash2,
+  ImagePlus,
 } from "lucide-react";
+
+// Redutor inteligente de imagem (HTML5 Canvas): recorta em quadrado central,
+// redimensiona para ícone leve (128/192/256px) e comprime em WebP/JPEG.
+async function compressImageToIcon(
+  file: File,
+  targetSize: number = 192,
+  quality: number = 0.78
+): Promise<{
+  dataUrl: string;
+  originalKB: number;
+  compressedKB: number;
+  reductionPct: number;
+}> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Falha ao ler o arquivo de imagem."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Formato de imagem inválido."));
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = targetSize;
+        canvas.height = targetSize;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Não foi possível inicializar o redutor de imagem."));
+          return;
+        }
+
+        // Recorte central quadrado para encaixe perfeito no ícone
+        const minSide = Math.min(img.width, img.height);
+        const sx = (img.width - minSide) / 2;
+        const sy = (img.height - minSide) / 2;
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, targetSize, targetSize);
+
+        let dataUrl = canvas.toDataURL("image/webp", quality);
+        if (!dataUrl.startsWith("data:image/webp")) {
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+
+        const originalKB = Math.max(0.1, Number((file.size / 1024).toFixed(1)));
+        const base64Len = dataUrl.split(",")[1]?.length || 0;
+        const compressedBytes = Math.round((base64Len * 3) / 4);
+        const compressedKB = Math.max(0.1, Number((compressedBytes / 1024).toFixed(1)));
+        const reductionPct =
+          file.size > compressedBytes
+            ? Math.min(99, Math.round(((file.size - compressedBytes) / file.size) * 100))
+            : 0;
+
+        resolve({ dataUrl, originalKB, compressedKB, reductionPct });
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function getLocalDateISO(date: Date = new Date()): string {
   const year = date.getFullYear();
@@ -178,9 +238,20 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [materialUrgency, setMaterialUrgency] = useState<MaterialUrgency>("media");
   const [isSubmittingMaterial, setIsSubmittingMaterial] = useState<boolean>(false);
 
-  // Modal de Equipe (CEO)
+  // Modal de Equipe e Identidade Visual (CEO)
   const [isTeamModalOpen, setIsTeamModalOpen] = useState<boolean>(false);
   const [editingTeamMemberId, setEditingTeamMemberId] = useState<number | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string>(() => getCachedLogo());
+  const [isLogoModalOpen, setIsLogoModalOpen] = useState<boolean>(false);
+  const [rawLogoFile, setRawLogoFile] = useState<File | null>(null);
+  const [logoTargetSize, setLogoTargetSize] = useState<128 | 192 | 256>(192);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string>("");
+  const [logoStats, setLogoStats] = useState<{
+    originalKB: number;
+    compressedKB: number;
+    reductionPct: number;
+  } | null>(null);
+  const [isSavingLogo, setIsSavingLogo] = useState<boolean>(false);
 
   // Função auxiliar para sincronizar data de referência do caixa, agenda e novos lançamentos
   const syncReferenceDate = (newDate: string) => {
@@ -190,7 +261,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     setTxDateInput(target);
   };
 
-  // Função central de carregamento de dados da API Neon (com isolamento RBAC)
+  // Função central de carregamento de dados (com isolamento RBAC)
   const carregarDados = useCallback(async (silencioso = false) => {
     if (!silencioso) setIsLoading(true);
     setIsRefreshing(true);
@@ -204,16 +275,18 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           : undefined
         : currentUser.id;
 
-      const [caixaRes, agendamentosRes, materiaisRes, equipeRes] = await Promise.all([
+      const [caixaRes, agendamentosRes, materiaisRes, equipeRes, remoteLogo] = await Promise.all([
         api.getCaixaSummary(caixaPeriod, caixaDateRef, effectiveBarberFilter),
         api.getAgendamentos(effectiveBarberFilter, dateQuery),
         api.getMateriais(),
         isCEO ? api.getUsuariosAdmin() : Promise.resolve([currentUser]),
+        api.getLogoBarbearia(),
       ]);
 
       setCaixaData(caixaRes);
       setAppointments(agendamentosRes);
       setMaterialRequests(materiaisRes);
+      setLogoUrl(remoteLogo);
 
       if (Array.isArray(equipeRes)) {
         setTeamMembers(equipeRes);
@@ -780,22 +853,107 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     }
   };
 
+  // Handlers do Redutor de Imagem e Ícone da Barbearia (Exclusivo CEO)
+  const handleOpenLogoModal = () => {
+    setRawLogoFile(null);
+    setLogoPreviewUrl(logoUrl || "");
+    setLogoStats(null);
+    setIsLogoModalOpen(true);
+  };
+
+  const handleSelectLogoFile = async (
+    file: File | null,
+    size: 128 | 192 | 256 = logoTargetSize
+  ) => {
+    if (!file) return;
+    setRawLogoFile(file);
+    try {
+      const result = await compressImageToIcon(file, size, 0.78);
+      setLogoPreviewUrl(result.dataUrl);
+      setLogoStats({
+        originalKB: result.originalKB,
+        compressedKB: result.compressedKB,
+        reductionPct: result.reductionPct,
+      });
+    } catch (err: any) {
+      alert(err.message || "Erro ao reduzir a imagem selecionada.");
+    }
+  };
+
+  const handleChangeLogoResolution = async (newSize: 128 | 192 | 256) => {
+    setLogoTargetSize(newSize);
+    if (rawLogoFile) {
+      await handleSelectLogoFile(rawLogoFile, newSize);
+    }
+  };
+
+  const handleSaveLogo = async () => {
+    setIsSavingLogo(true);
+    try {
+      const saved = await api.atualizarLogoBarbearia(logoPreviewUrl);
+      setLogoUrl(saved);
+      setIsLogoModalOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Erro ao salvar ícone da barbearia.");
+    } finally {
+      setIsSavingLogo(false);
+    }
+  };
+
+  const handleResetLogo = async () => {
+    setIsSavingLogo(true);
+    try {
+      await api.atualizarLogoBarbearia("");
+      setLogoUrl("");
+      setLogoPreviewUrl("");
+      setLogoStats(null);
+      setRawLogoFile(null);
+      setIsLogoModalOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Erro ao restaurar ícone padrão.");
+    } finally {
+      setIsSavingLogo(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#07090e] text-slate-100 flex flex-col font-sans pb-24 md:pb-8">
       {/* Top Navbar */}
       <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-[#0b0f19]/80 border-b border-white/10 px-4 py-3 sm:px-6">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500/20 to-amber-600/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <Scissors className="w-5 h-5 -rotate-45" />
-            </div>
+            <button
+              type="button"
+              onClick={isCEO ? handleOpenLogoModal : undefined}
+              title={
+                isCEO
+                  ? "Clique para alterar o ícone da barbearia (visível para todos)"
+                  : "Barbearia Rocha"
+              }
+              className={`relative w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500/20 to-amber-600/10 border border-amber-500/30 flex items-center justify-center text-amber-400 overflow-hidden shadow-glow animate-float-slow ${
+                isCEO
+                  ? "cursor-pointer hover:scale-105 hover:border-amber-400 transition-transform group"
+                  : "cursor-default"
+              }`}
+            >
+              {logoUrl ? (
+                <img
+                  src={logoUrl}
+                  alt="Ícone da Barbearia"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <Scissors className="w-5 h-5 -rotate-45" />
+              )}
+              {isCEO && (
+                <span className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                  <ImagePlus className="w-4 h-4 text-amber-300" />
+                </span>
+              )}
+            </button>
             <div>
               <h2 className="text-sm sm:text-base font-bold tracking-tight text-white flex items-center gap-2">
                 ROCHA BARBERSHOP
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  FLY.IO ONLINE
-                </span>
               </h2>
               <p className="text-[11px] text-slate-400">
                 {new Date().toLocaleDateString("pt-BR", {
@@ -812,7 +970,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             <button
               onClick={() => carregarDados(true)}
               disabled={isRefreshing}
-              title="Recarregar dados do Neon"
+              title="Atualizar dados"
               className="p-2 rounded-xl bg-slate-900 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin text-amber-400" : ""}`} />
@@ -861,7 +1019,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         )}
 
         {/* 0. SINCRONIZAÇÃO DE DATA, FILTRO DE VISÃO (RBAC) & DIVISÃO DE PERÍODO */}
-        <section className="mb-5 p-4 rounded-2xl bg-slate-900/60 border border-white/10 space-y-4">
+        <section className="mb-5 p-4 rounded-2xl bg-slate-900/60 border border-white/10 space-y-4 animate-fade-up">
           {/* Cabeçalho de escopo RBAC: Visão Global / Filtro por Barbeiro (CEO) vs Visão Individual (Barbeiro) */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
             <div className="flex items-center gap-2.5">
@@ -903,11 +1061,19 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 </select>
                 <button
                   type="button"
+                  onClick={handleOpenLogoModal}
+                  className="h-8 px-3 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                >
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  Ícone da Barbearia
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setEditingTeamMemberId(null);
                     setIsTeamModalOpen(true);
                   }}
-                  className="h-8 px-3 rounded-lg bg-purple-600/25 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 text-xs font-bold flex items-center gap-1.5 transition-all"
+                  className="h-8 px-3 rounded-lg bg-purple-600/25 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
                 >
                   <Settings className="w-3.5 h-3.5" />
                   Gerenciar Equipe
@@ -990,7 +1156,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   key={item.key}
                   type="button"
                   onClick={() => setCaixaPeriod(item.key)}
-                  className={`text-left p-3.5 rounded-xl border transition-all ${
+                  className={`text-left p-3.5 rounded-xl border card-hover ${
                     isSelected
                       ? "bg-slate-950 border-amber-500/50 ring-1 ring-amber-500/30"
                       : "bg-slate-950/50 border-white/5 hover:border-white/15"
@@ -1036,9 +1202,9 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />
           </div>
         ) : (
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6">
+          <section className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6 animate-fade-up">
             {/* Card 1: Saldo Líquido do Período */}
-            <div className="relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-[#0c1815] via-[#0f172a] to-[#07090e] border border-emerald-500/30 shadow-emerald-glow">
+            <div className="relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-[#0c1815] via-[#0f172a] to-[#07090e] border border-emerald-500/30 shadow-emerald-glow card-hover">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
                   <Wallet className="w-4 h-4" />{" "}
@@ -1062,7 +1228,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             </div>
 
             {/* Card 2: Entradas Brutas */}
-            <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between">
+            <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between card-hover">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
                   <TrendingUp className="w-4 h-4 text-emerald-400" />{" "}
@@ -1083,7 +1249,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             </div>
 
             {/* Card 3: Saídas e Insumos */}
-            <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between">
+            <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between card-hover">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
                   <TrendingDown className="w-4 h-4 text-rose-400" />{" "}
@@ -1490,12 +1656,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           </div>
         )}
 
-        {/* ABA INSUMOS: TABELA PEDIDOS_MATERIAIS DO NEON */}
+        {/* ABA INSUMOS */}
         {activeTab === "insumos" && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs text-slate-400">
-                Lista de materiais em falta (Neon: <code>pedidos_materiais</code>)
+                Controle de materiais e insumos da barbearia
               </p>
               <button
                 onClick={() => setIsMaterialModalOpen(true)}
@@ -1599,7 +1765,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   Capacidade da Equipe: {teamMembers.length} / 5 membros
                 </h4>
                 <p className="text-xs text-purple-200/70 mt-0.5">
-                  Conectado à tabela <code>usuarios</code> do Neon PostgreSQL.
+                  Gerencie o acesso e os PINs dos profissionais da barbearia.
                 </p>
               </div>
               <button
@@ -1731,7 +1897,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Profissional (Neon)
+                    Profissional Responsável
                   </label>
                   {isCEO ? (
                     <select
@@ -1756,7 +1922,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               {/* Forma de Pagamento */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Forma de Pagamento (Neon)
+                  Forma de Pagamento
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {[
@@ -1792,7 +1958,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               >
                 {isSubmittingTx ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" /> Registrando no Neon...
+                    <Loader2 className="w-4 h-4 animate-spin" /> Registrando...
                   </>
                 ) : (
                   "Confirmar Lançamento"
@@ -1803,14 +1969,14 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         </div>
       )}
 
-      {/* MODAL 2: NOVO AGENDAMENTO (POST /api/agendamentos) */}
+      {/* MODAL 2: NOVO AGENDAMENTO */}
       {isAppModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-white/15 p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/10">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-amber-400" />
-                Novo Agendamento (Neon)
+                Novo Agendamento
               </h3>
               <button
                 onClick={() => setIsAppModalOpen(false)}
@@ -1918,14 +2084,14 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         </div>
       )}
 
-      {/* MODAL 3: PEDIDO DE INSUMO (POST /api/materiais) */}
+      {/* MODAL 3: PEDIDO DE INSUMO */}
       {isMaterialModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-white/15 p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/10">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Package className="w-5 h-5 text-cyan-400" />
-                Solicitar Material (Neon)
+                Solicitar Material
               </h3>
               <button
                 onClick={() => setIsMaterialModalOpen(false)}
@@ -1995,7 +2161,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               >
                 {isSubmittingMaterial ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" /> Registrando no Neon...
+                    <Loader2 className="w-4 h-4 animate-spin" /> Enviando solicitação...
                   </>
                 ) : (
                   "Enviar Solicitação"
@@ -2006,7 +2172,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         </div>
       )}
 
-      {/* MODAL 4: GESTÃO DE EQUIPE (EXCLUSIVO CEO - POST /api/admin/usuarios) */}
+      {/* MODAL 4: GESTÃO DE EQUIPE (EXCLUSIVO CEO) */}
       {isCEO && (
         <TeamManagementModal
           isOpen={isTeamModalOpen}
@@ -2021,6 +2187,134 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           onEditUser={handleEditTeamMember}
           onRefresh={() => carregarDados(true)}
         />
+      )}
+
+      {/* MODAL 5: ÍCONE DA BARBEARIA COM REDUTOR DE TAMANHO (EXCLUSIVO CEO) */}
+      {isCEO && isLogoModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-white/15 p-5 shadow-2xl animate-scale-in">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/10">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <ImagePlus className="w-5 h-5 text-amber-400" />
+                Ícone da Barbearia (Visível para Todos)
+              </h3>
+              <button
+                onClick={() => setIsLogoModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Pré-visualização ao vivo */}
+              <div className="p-4 rounded-2xl bg-slate-950/70 border border-white/10 flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-500/20 to-amber-600/10 border border-amber-500/40 flex items-center justify-center text-amber-400 overflow-hidden shadow-glow flex-shrink-0 animate-float-slow">
+                  {logoPreviewUrl ? (
+                    <img
+                      src={logoPreviewUrl}
+                      alt="Prévia do ícone"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <Scissors className="w-7 h-7 -rotate-45" />
+                  )}
+                </div>
+                <div className="text-xs text-slate-300 space-y-1">
+                  <p className="font-bold text-white">Pré-visualização do Ícone</p>
+                  <p className="text-slate-400">
+                    Aparecerá na tela de PIN e no topo do painel para toda a equipe.
+                  </p>
+                  {logoStats && (
+                    <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono text-[11px]">
+                      <span>{logoStats.originalKB} KB</span>
+                      <span>→</span>
+                      <strong>{logoStats.compressedKB} KB</strong>
+                      {logoStats.reductionPct > 0 && (
+                        <span>(-{logoStats.reductionPct}%)</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Nível do Redutor de Tamanho */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Redutor Automático de Tamanho
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { size: 128 as const, label: "Ultra Leve", sub: "128×128px" },
+                      { size: 192 as const, label: "Padrão HD", sub: "192×192px" },
+                      { size: 256 as const, label: "Nitidez Máx.", sub: "256×256px" },
+                    ]
+                  ).map((opt) => (
+                    <button
+                      key={opt.size}
+                      type="button"
+                      onClick={() => handleChangeLogoResolution(opt.size)}
+                      className={`p-2 rounded-xl border text-center transition-all ${
+                        logoTargetSize === opt.size
+                          ? "bg-amber-500/20 border-amber-400 text-amber-300 font-bold"
+                          : "bg-slate-950 border-white/10 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      <div className="text-xs">{opt.label}</div>
+                      <div className="text-[10px] font-mono opacity-80">{opt.sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Upload de Imagem */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Selecionar Imagem da Barbearia
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleSelectLogoFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs text-slate-300 file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 file:cursor-pointer cursor-pointer bg-slate-950 border border-white/15 rounded-xl p-1.5"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Qualquer foto é automaticamente recortada em quadrado e comprimida em WebP leve.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                {logoUrl && (
+                  <button
+                    type="button"
+                    onClick={handleResetLogo}
+                    disabled={isSavingLogo}
+                    className="h-11 px-3.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold transition-all disabled:opacity-50"
+                  >
+                    Restaurar Padrão
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleSaveLogo}
+                  disabled={isSavingLogo || !logoPreviewUrl}
+                  className="flex-1 h-11 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm transition-all shadow-glow flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSavingLogo ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Salvando...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" /> Salvar Ícone para Todos
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -67,8 +67,8 @@ func main() {
 	}
 	defer db.Fechar()
 
-	// Chave HMAC para tokens de sessão
-	authSecret := auth.DeriveSecret(os.Getenv("AUTH_SECRET"), databaseURL)
+	// Chave HMAC para tokens de sessão (lê JWT_SECRET / TOKEN_SECRET / AUTH_SECRET com fallback seguro)
+	authSecret := auth.ResolveSecretFromEnv(databaseURL)
 	authMiddleware := middleware.NewAuthMiddleware(db, authSecret)
 
 	// 2. Inicialização dos Handlers da API
@@ -94,13 +94,14 @@ func main() {
 	// Rota pública de Healthcheck
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"online","sistema":"Barbearia Rocha API","banco":"Neon PostgreSQL"}`))
+		w.Write([]byte(`{"status":"online","sistema":"Barbearia Rocha API"}`))
 	})
 
 	// 4. Registro dos Endpoints Principais
 	r.Route("/api", func(r chi.Router) {
-		// Rota pública: Autenticação por PIN
+		// Rotas públicas: Autenticação por PIN e Ícone da Barbearia
 		r.Post("/auth/pin", authHandler.LoginPIN)
+		r.Get("/config/logo", adminHandler.ObterLogoBarbearia)
 
 		// Rotas autenticadas (Barbeiro e CEO)
 		r.Group(func(r chi.Router) {
@@ -129,11 +130,12 @@ func main() {
 
 				r.Patch("/materiais/{id}", materialHandler.AtualizarStatusMaterial)
 
-				// Painel de Gestão de Equipe (CEO - Limite estrito de 5 cadastros)
+				// Painel de Gestão de Equipe e Identidade Visual (CEO)
 				r.Get("/admin/usuarios", adminHandler.ListarUsuarios)
 				r.Post("/admin/usuarios", adminHandler.CriarUsuario)
 				r.Put("/admin/usuarios/{id}", adminHandler.EditarUsuario)
 				r.Delete("/admin/usuarios/{id}", adminHandler.DeletarUsuario)
+				r.Put("/admin/config/logo", adminHandler.AtualizarLogoBarbearia)
 			})
 		})
 	})

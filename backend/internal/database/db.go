@@ -97,6 +97,12 @@ func (db *DB) verificarSchema(ctx context.Context) error {
 			status VARCHAR(20) DEFAULT 'pendente' CHECK (status IN ('pendente', 'comprado')),
 			criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+
+		`CREATE TABLE IF NOT EXISTS configuracoes_barbearia (
+			chave VARCHAR(50) PRIMARY KEY,
+			valor TEXT NOT NULL,
+			atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, q := range queries {

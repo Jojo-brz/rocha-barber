@@ -211,7 +211,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Acesso restrito do CEO. Limite estrito de 5 colaboradores (Neon PostgreSQL).
+                Acesso restrito do CEO. Limite máximo de 5 colaboradores.
               </p>
             </div>
           </div>
@@ -275,7 +275,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
               <UserPlus className="w-3.5 h-3.5 text-purple-400" />
-              Cadastrar Novo Colaborador no Neon
+              Cadastrar Novo Colaborador
             </h3>
           </div>
 
@@ -345,11 +345,11 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
             }`}
           >
             {isSubmitting ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Salvando no Neon...</>
+              <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
             ) : isFull ? (
               <><ShieldAlert className="w-4 h-4" /> Limite de 5 Membros Atingido</>
             ) : (
-              <><UserPlus className="w-4 h-4" /> Adicionar à Equipe (API)</>
+              <><UserPlus className="w-4 h-4" /> Adicionar à Equipe</>
             )}
           </button>
         </form>
@@ -357,7 +357,7 @@ export const TeamManagementModal: React.FC<TeamManagementModalProps> = ({
         {/* Lista de Colaboradores */}
         <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-            Colaboradores Ativos no Neon ({users.length}):
+            Colaboradores Ativos ({users.length}):
           </p>
 
           {/* Erro de exclusão */}

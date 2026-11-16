@@ -3,6 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -175,8 +177,9 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 		&periodos.Mensal.TotalMovimentacoes,
 	)
 	if err != nil {
+		log.Printf("[CaixaHandler.ObterCaixaDiario] erro ao consolidar faturamento: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consolidar faturamento por período: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consolidar faturamento por período"})
 		return
 	}
 
@@ -184,31 +187,27 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 	periodos.Semanal.SaldoLiquido = periodos.Semanal.Entradas - periodos.Semanal.Saidas
 	periodos.Mensal.SaldoLiquido = periodos.Mensal.Entradas - periodos.Mensal.Saidas
 
-	// 2. Movimentações do período selecionado (com filtro RBAC por barbeiro_id)
-	var filtroPeriodoSQL string
-	switch periodo {
-	case "semanal":
-		filtroPeriodoSQL = `date_trunc('week', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('week', $1::date)`
-	case "mensal":
-		filtroPeriodoSQL = `date_trunc('month', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('month', $1::date)`
-	default:
-		filtroPeriodoSQL = `(m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date = $1::date`
-	}
-
-	query := fmt.Sprintf(`
+	// 2. Movimentações do período selecionado (100% parametrizada com $1, $2 e $3 sem fmt.Sprintf)
+	const query = `
 		SELECT
 			m.id, m.barbeiro_id, COALESCE(u.nome, 'Geral/Caixa') as barbeiro_nome,
 			m.tipo, m.descricao, m.valor, COALESCE(m.forma_pagamento, 'dinheiro'), m.criado_em
 		FROM movimentacoes_caixa m
 		LEFT JOIN usuarios u ON m.barbeiro_id = u.id
-		WHERE (%s) AND ($2::bigint IS NULL OR m.barbeiro_id = $2)
+		WHERE (
+			($3 = 'diario' AND (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date = $1::date)
+			OR ($3 = 'semanal' AND date_trunc('week', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('week', $1::date))
+			OR ($3 = 'mensal' AND date_trunc('month', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('month', $1::date))
+		)
+		AND ($2::bigint IS NULL OR m.barbeiro_id = $2)
 		ORDER BY m.criado_em DESC;
-	`, filtroPeriodoSQL)
+	`
 
-	rows, err := h.db.Pool.Query(r.Context(), query, dataRefStr, filtroBarbeiroID)
+	rows, err := h.db.Pool.Query(r.Context(), query, dataRefStr, filtroBarbeiroID, periodo)
 	if err != nil {
+		log.Printf("[CaixaHandler.ObterCaixaDiario] erro ao buscar movimentacoes: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao buscar movimentações de caixa: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao buscar movimentações de caixa"})
 		return
 	}
 	defer rows.Close()
@@ -230,8 +229,9 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 			&m.CriadoEm,
 		)
 		if err != nil {
+			log.Printf("[CaixaHandler.ObterCaixaDiario] erro scan: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao mapear linhas do caixa: " + err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao mapear linhas do caixa"})
 			return
 		}
 
@@ -308,9 +308,9 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 	}
 	req.BarbeiroID = &targetBarbeiroID
 
-	if req.Valor <= 0 {
+	if math.IsNaN(req.Valor) || math.IsInf(req.Valor, 0) || req.Valor <= 0 || req.Valor > 1000000 {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "O valor da movimentação deve ser maior que zero"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "O valor da movimentação deve ser maior que zero e válido"})
 		return
 	}
 
@@ -372,8 +372,9 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 	).Scan(&id, &criadoEm)
 
 	if err != nil {
+		log.Printf("[CaixaHandler.RegistrarMovimentacao] erro insert: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao gravar movimentação no Neon: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao gravar movimentação"})
 		return
 	}
 

@@ -33,3 +33,9 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+@layer utilities {
+  .card-hover {
+    @apply transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-lg;
+  }
+}

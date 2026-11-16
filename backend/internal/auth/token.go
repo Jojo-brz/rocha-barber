@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -18,7 +19,18 @@ type TokenClaims struct {
 	Exp    int64               `json:"exp"`
 }
 
-// DeriveSecret retorna a chave HMAC a partir de AUTH_SECRET ou, se ausente, derivada da DATABASE_URL.
+// ResolveSecretFromEnv obtém a chave secreta priorizando JWT_SECRET, TOKEN_SECRET e AUTH_SECRET,
+// mantendo fallback seguro para não interromper o servidor caso nenhuma variável esteja definida.
+func ResolveSecretFromEnv(databaseURL string) []byte {
+	for _, key := range []string{"JWT_SECRET", "TOKEN_SECRET", "AUTH_SECRET"} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			return DeriveSecret(val, databaseURL)
+		}
+	}
+	return DeriveSecret("", databaseURL)
+}
+
+// DeriveSecret retorna a chave HMAC a partir do segredo configurado ou derivada de forma determinística.
 func DeriveSecret(authSecret, databaseURL string) []byte {
 	trimmed := strings.TrimSpace(authSecret)
 	if trimmed != "" {
@@ -83,6 +95,10 @@ func VerifyToken(token string, secret []byte) (*TokenClaims, error) {
 
 	if claims.UserID <= 0 || time.Now().Unix() > claims.Exp {
 		return nil, errors.New("token expirado ou inválido")
+	}
+
+	if !domain.IsAdminRole(claims.Papel) && claims.Papel != domain.PapelBarbeiro {
+		return nil, errors.New("papel de usuário inválido no token")
 	}
 
 	return &claims, nil

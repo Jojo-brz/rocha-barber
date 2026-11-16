@@ -39,7 +39,30 @@ const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 export const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
 
 const SESSION_KEY = "barbearia_rocha_user";
+const LOGO_CACHE_KEY = "barbearia_rocha_logo";
 let inMemoryToken: string | null = null;
+
+export function getCachedLogo(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return localStorage.getItem(LOGO_CACHE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setCachedLogo(logoUrl: string) {
+  if (typeof window === "undefined") return;
+  try {
+    if (logoUrl) {
+      localStorage.setItem(LOGO_CACHE_KEY, logoUrl);
+    } else {
+      localStorage.removeItem(LOGO_CACHE_KEY);
+    }
+  } catch {
+    // Ignora erro de storage
+  }
+}
 
 function getSessionToken(): string | null {
   if (inMemoryToken) return inMemoryToken;
@@ -112,7 +135,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       throw err;
     }
     throw new ApiError(
-      `Não foi possível conectar ao servidor backend (${API_BASE_URL}). Verifique sua conexão ou se a API está online no Fly.io.`,
+      "Não foi possível conectar ao servidor. Verifique sua conexão com a internet e tente novamente.",
       503
     );
   }
@@ -580,5 +603,29 @@ export const api = {
       pin: raw.pin,
       role: raw.papel,
     };
+  },
+
+  // 6. Ícone / Logo da Barbearia (visível para todos, editável pelo CEO)
+  async getLogoBarbearia(): Promise<string> {
+    try {
+      const raw = await request<{ logo_url?: string }>("/api/config/logo", {
+        method: "GET",
+      });
+      const logo = raw?.logo_url || "";
+      setCachedLogo(logo);
+      return logo;
+    } catch {
+      return getCachedLogo();
+    }
+  },
+
+  async atualizarLogoBarbearia(logoUrl: string): Promise<string> {
+    const raw = await request<{ logo_url?: string }>("/api/admin/config/logo", {
+      method: "PUT",
+      body: JSON.stringify({ logo_url: logoUrl }),
+    });
+    const saved = raw?.logo_url || "";
+    setCachedLogo(saved);
+    return saved;
   },
 };
