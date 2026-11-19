@@ -73,7 +73,8 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 
-# --- Arquivos Temporários ---
+# --- Arquivos Temporários & Pacotes de Deploy ---
 *.tmp
 *.temp
 .temp/
+*.zip

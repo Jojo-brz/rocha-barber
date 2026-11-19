@@ -57,13 +57,13 @@ func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Println("⚠️  [Atenção] Variável DATABASE_URL não definida!")
-		log.Println("👉 Crie um arquivo .env na pasta backend com sua conexão Neon: DATABASE_URL=postgres://...")
+		log.Println("👉 Crie um arquivo .env na pasta backend com sua conexão: DATABASE_URL=postgres://...")
 	}
 
-	// 1. Conexão com o PostgreSQL do Neon
+	// 1. Conexão com o PostgreSQL
 	db, err := database.Conectar(databaseURL)
 	if err != nil {
-		log.Fatalf("❌ Falha crítica ao inicializar banco de dados Neon: %v", err)
+		log.Fatalf("❌ Falha crítica ao inicializar banco de dados: %v", err)
 	}
 	defer db.Fechar()
 
@@ -152,7 +152,7 @@ func main() {
 
 	go func() {
 		log.Printf("==========================================================")
-		log.Printf("💈 BARBEARIA ROCHA - API BACKEND (Golang + Neon Postgres)")
+		log.Printf("💈 BARBEARIA ROCHA - API BACKEND (Golang + PostgreSQL)")
 		log.Printf("🚀 Servidor rodando em: http://localhost:%s", port)
 		log.Printf("🔒 Trava de Equipe: Limite estrito de 5 colaboradores")
 		log.Printf("==========================================================")

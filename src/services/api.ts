@@ -35,10 +35,10 @@ function formatTxDateTime(iso: string, serverDate?: string, serverTime?: string)
   return { date, timestamp };
 }
 
-const DEFAULT_PROD_API_URL = "https://barbearia-rocha-api.fly.dev";
+const DEFAULT_PROD_API_URL = "https://barbeariarocha.discloud.app";
 const ENV_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
 export const API_BASE_URL =
-  !ENV_API_URL || ENV_API_URL.includes("backend-snowy-tide-7292.fly.dev")
+  !ENV_API_URL || ENV_API_URL.includes(".fly.dev")
     ? DEFAULT_PROD_API_URL
     : ENV_API_URL;
 

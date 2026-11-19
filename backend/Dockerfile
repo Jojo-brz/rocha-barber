@@ -8,8 +8,8 @@ RUN go mod download && go mod verify
 
 COPY . .
 
-# Aponta explicitamente para o diretório ./cmd/api onde reside o main.go
-RUN CGO_ENABLED=0 GOOS=linux go build -v -o /run-app ./cmd/api
+# Compila a partir do main.go na raiz do backend
+RUN CGO_ENABLED=0 GOOS=linux go build -v -o /run-app .
 
 FROM debian:bookworm-slim
 
