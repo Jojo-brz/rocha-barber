@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -13,6 +14,8 @@ import (
 	"github.com/barbearia-rocha/backend/internal/database"
 	"github.com/barbearia-rocha/backend/internal/domain"
 	"github.com/barbearia-rocha/backend/internal/middleware"
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 func loadSaoPauloLocation() *time.Location {
@@ -413,4 +416,192 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// EditarMovimentacao permite ao CEO editar qualquer lançamento do caixa
+// PUT /api/caixa/{id}
+func (h *CaixaHandler) EditarMovimentacao(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if !requireAdminCaller(w, r) {
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID da movimentação inválido"})
+		return
+	}
+
+	var req domain.NovaMovimentacaoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Payload JSON inválido"})
+		return
+	}
+
+	if math.IsNaN(req.Valor) || math.IsInf(req.Valor, 0) || req.Valor <= 0 || req.Valor > 1000000 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "O valor da movimentação deve ser maior que zero e válido"})
+		return
+	}
+
+	tipoNormalizado := domain.TipoMovimentacao(strings.ToLower(strings.TrimSpace(string(req.Tipo))))
+	if tipoNormalizado != domain.TipoEntrada && tipoNormalizado != domain.TipoSaida {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Tipo inválido. Deve ser 'entrada' ou 'saida'"})
+		return
+	}
+
+	formaNormalizada := domain.FormaPagamento(strings.ToLower(strings.TrimSpace(string(req.FormaPagamento))))
+	if formaNormalizada == "cartao" {
+		formaNormalizada = domain.PagamentoCartaoCredito
+	}
+	if formaNormalizada != domain.PagamentoPix &&
+		formaNormalizada != domain.PagamentoDinheiro &&
+		formaNormalizada != domain.PagamentoCartaoCredito &&
+		formaNormalizada != domain.PagamentoCartaoDebito {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Forma de pagamento inválida"})
+		return
+	}
+
+	categoriaNormalizada := strings.ToUpper(strings.TrimSpace(req.Categoria))
+	if tipoNormalizado == domain.TipoSaida {
+		if categoriaNormalizada == "USO DIÁRIO" || categoriaNormalizada == "USO_DIARIO" || categoriaNormalizada == "USO DIARIO" {
+			categoriaNormalizada = "USO DIARIO"
+		} else if categoriaNormalizada == "" {
+			categoriaNormalizada = "DESPESA GERAL"
+		}
+	} else {
+		categoriaNormalizada = ""
+	}
+
+	req.Descricao = strings.TrimSpace(req.Descricao)
+	if req.Descricao == "" {
+		if tipoNormalizado == domain.TipoEntrada {
+			req.Descricao = "Serviço Avulso de Bancada"
+		} else if categoriaNormalizada == "USO DIARIO" {
+			req.Descricao = "Compra / Insumo de Uso Diário"
+		} else {
+			req.Descricao = "Despesa Operacional"
+		}
+	}
+
+	var criadoEmAtual time.Time
+	var barbeiroAtual *int64
+	err = h.db.Pool.QueryRow(
+		r.Context(),
+		"SELECT criado_em, barbeiro_id FROM movimentacoes_caixa WHERE id = $1",
+		id,
+	).Scan(&criadoEmAtual, &barbeiroAtual)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Lançamento não encontrado"})
+			return
+		}
+		log.Printf("[CaixaHandler.EditarMovimentacao] erro select: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar lançamento"})
+		return
+	}
+
+	targetBarbeiroID := barbeiroAtual
+	if req.BarbeiroID != nil && *req.BarbeiroID > 0 {
+		targetBarbeiroID = req.BarbeiroID
+	}
+
+	novoCriadoEmUTC := criadoEmAtual
+	if req.Data != nil && strings.TrimSpace(*req.Data) != "" {
+		ts, err := resolverTimestampLancamento(req.Data, h.loc, criadoEmAtual)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		novoCriadoEmUTC = ts
+	}
+
+	var m domain.MovimentacaoCaixa
+	err = h.db.Pool.QueryRow(
+		r.Context(),
+		`WITH updated AS (
+			UPDATE movimentacoes_caixa
+			SET barbeiro_id = $1,
+			    tipo = $2,
+			    categoria = NULLIF($3, ''),
+			    descricao = $4,
+			    valor = $5,
+			    forma_pagamento = $6,
+			    criado_em = ($7::timestamptz AT TIME ZONE 'UTC')
+			WHERE id = $8
+			RETURNING id, barbeiro_id, tipo, COALESCE(categoria, '') AS categoria, descricao, valor, forma_pagamento, criado_em
+		)
+		SELECT up.id, up.barbeiro_id, COALESCE(u.nome, 'Geral/Caixa'), up.tipo, up.categoria, up.descricao, up.valor, up.forma_pagamento, up.criado_em
+		FROM updated up
+		LEFT JOIN usuarios u ON up.barbeiro_id = u.id`,
+		targetBarbeiroID,
+		tipoNormalizado,
+		categoriaNormalizada,
+		req.Descricao,
+		req.Valor,
+		formaNormalizada,
+		novoCriadoEmUTC,
+		id,
+	).Scan(
+		&m.ID,
+		&m.BarbeiroID,
+		&m.BarbeiroNome,
+		&m.Tipo,
+		&m.Categoria,
+		&m.Descricao,
+		&m.Valor,
+		&m.FormaPagamento,
+		&m.CriadoEm,
+	)
+	if err != nil {
+		log.Printf("[CaixaHandler.EditarMovimentacao] erro update: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao atualizar lançamento do caixa"})
+		return
+	}
+
+	h.preencherDataHoraLocal(&m)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(m)
+}
+
+// DeletarMovimentacao permite ao CEO excluir qualquer lançamento do caixa
+// DELETE /api/caixa/{id}
+func (h *CaixaHandler) DeletarMovimentacao(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if !requireAdminCaller(w, r) {
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID da movimentação inválido"})
+		return
+	}
+
+	cmdTag, err := h.db.Pool.Exec(r.Context(), "DELETE FROM movimentacoes_caixa WHERE id = $1", id)
+	if err != nil {
+		log.Printf("[CaixaHandler.DeletarMovimentacao] erro delete: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao excluir lançamento do caixa"})
+		return
+	}
+	if cmdTag.RowsAffected() == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Lançamento não encontrado"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Lançamento excluído com sucesso"})
 }

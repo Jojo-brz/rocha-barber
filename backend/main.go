@@ -113,10 +113,13 @@ func main() {
 			// Controle de Caixa Diário
 			r.Get("/caixa", caixaHandler.ObterCaixaDiario)
 			r.Post("/caixa", caixaHandler.RegistrarMovimentacao)
+			r.Put("/caixa/{id}", caixaHandler.EditarMovimentacao)
+			r.Delete("/caixa/{id}", caixaHandler.DeletarMovimentacao)
 
 			// Agendamentos de Atendimentos
 			r.Get("/agendamentos", agendamentoHandler.ListarAgendamentos)
 			r.Post("/agendamentos", agendamentoHandler.CriarAgendamento)
+			r.Put("/agendamentos/{id}", agendamentoHandler.EditarAgendamento)
 			r.Patch("/agendamentos/{id}", agendamentoHandler.AtualizarStatusAgendamento)
 			r.Delete("/agendamentos/{id}", agendamentoHandler.DeletarAgendamento)
 

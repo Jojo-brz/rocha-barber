@@ -210,8 +210,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     "caixa"
   );
 
-  // Modal de Transação (Entrada/Saída)
+  // Modal de Transação (Entrada/Saída e Edição pelo CEO)
   const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
+  const [editingTxId, setEditingTxId] = useState<number | string | null>(null);
+  const [deletingTxId, setDeletingTxId] = useState<number | string | null>(null);
   const [txType, setTxType] = useState<TransactionType>("entrada");
   const [txCategory, setTxCategory] = useState<ExpenseCategory>("USO DIARIO");
   const [amountInput, setAmountInput] = useState<string>("");
@@ -221,9 +223,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [selectedBarberId, setSelectedBarberId] = useState<number | string>(currentUser.id);
   const [isSubmittingTx, setIsSubmittingTx] = useState<boolean>(false);
 
-  // Modal de Novo Agendamento & filtro da Agenda
+  // Modal de Novo/Editar Agendamento & filtro da Agenda
   const [agendaDateFilter, setAgendaDateFilter] = useState<string>(() => getLocalDateISO());
   const [isAppModalOpen, setIsAppModalOpen] = useState<boolean>(false);
+  const [editingAppId, setEditingAppId] = useState<number | string | null>(null);
   const [clientNameInput, setClientNameInput] = useState<string>("");
   const [serviceInput, setServiceInput] = useState<string>("");
   const [appAmountInput, setAppAmountInput] = useState<string>("");
@@ -341,7 +344,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           ? "Insumo / Compra - Uso Diário"
           : "Despesa Operacional";
 
-      await api.criarMovimentacao({
+      const payload = {
         tipo: txType,
         categoria: txType === "saida" ? txCategory : undefined,
         descricao: descInput.trim() || defaultDesc,
@@ -349,9 +352,16 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         forma_pagamento: paymentMethod,
         barbeiro_id: targetBarberId,
         data: txDateInput || getLocalDateISO(),
-      });
+      };
+
+      if (editingTxId && isCEO) {
+        await api.editarMovimentacao(editingTxId, payload);
+      } else {
+        await api.criarMovimentacao(payload);
+      }
 
       setIsTxModalOpen(false);
+      setEditingTxId(null);
       setAmountInput("");
       setDescInput("");
       await carregarDados(true);
@@ -363,6 +373,50 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       alert(err.message || "Erro ao registrar no caixa.");
     } finally {
       setIsSubmittingTx(false);
+    }
+  };
+
+  // Handler do CEO para abrir modal de edição de um lançamento do caixa
+  const handleStartEditTransaction = (tx: Transaction) => {
+    if (!isCEO) return;
+    setEditingTxId(tx.id);
+    setTxType(tx.type);
+    setTxCategory(
+      tx.category === "DESPESA GERAL" ? "DESPESA GERAL" : "USO DIARIO"
+    );
+    setAmountInput(tx.amount.toFixed(2).replace(".", ","));
+    setDescInput(tx.description);
+    setPaymentMethod(tx.paymentMethod);
+    setSelectedBarberId(tx.barberId || currentUser.id);
+    if (tx.date && /^\d{2}\/\d{2}\/\d{4}$/.test(tx.date)) {
+      const [d, m, y] = tx.date.split("/");
+      setTxDateInput(`${y}-${m}-${d}`);
+    } else {
+      setTxDateInput(caixaDateRef || getLocalDateISO());
+    }
+    setIsTxModalOpen(true);
+  };
+
+  // Handler do CEO para excluir um lançamento do caixa (DELETE /api/caixa/{id})
+  const handleDeleteTransaction = async (tx: Transaction) => {
+    if (!isCEO) return;
+    if (
+      !window.confirm(
+        `Excluir o lançamento "${tx.description}" (R$ ${tx.amount
+          .toFixed(2)
+          .replace(".", ",")})?`
+      )
+    ) {
+      return;
+    }
+    setDeletingTxId(tx.id);
+    try {
+      await api.deletarMovimentacao(tx.id);
+      await carregarDados(true);
+    } catch (err: any) {
+      alert(err.message || "Erro ao excluir lançamento.");
+    } finally {
+      setDeletingTxId(null);
     }
   };
 
@@ -752,26 +806,54 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
     setIsSubmittingApp(true);
     try {
-      await api.criarAgendamento({
+      const payload = {
         cliente_nome: clientNameInput.trim(),
         servico: serviceInput.trim(),
         valor: parsedValor,
         forma_pagamento: appPaymentMethod,
         data_hora: scheduleDate.toISOString(),
         barbeiro_id: targetBarberId,
-      });
+      };
+
+      if (editingAppId && isCEO) {
+        await api.editarAgendamento(editingAppId, payload);
+      } else {
+        await api.criarAgendamento(payload);
+      }
 
       setIsAppModalOpen(false);
+      setEditingAppId(null);
       setClientNameInput("");
       setServiceInput("");
       setAppAmountInput("");
       setTimeInput("");
       await carregarDados(true);
     } catch (err: any) {
-      alert(err.message || "Erro ao criar agendamento.");
+      alert(err.message || "Erro ao salvar agendamento.");
     } finally {
       setIsSubmittingApp(false);
     }
+  };
+
+  // Handler do CEO para abrir modal de edição de agendamento
+  const handleStartEditAppointment = (app: Appointment) => {
+    if (!isCEO) return;
+    setEditingAppId(app.id);
+    setClientNameInput(app.clientName);
+    setServiceInput(app.service);
+    setAppAmountInput(
+      (app.amount || 0) > 0 ? (app.amount || 0).toFixed(2).replace(".", ",") : ""
+    );
+    setAppPaymentMethod(app.paymentMethod || "pix");
+    setAppDateInput(
+      app.dateISO ||
+        (agendaDateFilter && agendaDateFilter !== "todos"
+          ? agendaDateFilter
+          : getLocalDateISO())
+    );
+    setTimeInput(app.time);
+    setAppBarberId(app.barberId || currentUser.id);
+    setIsAppModalOpen(true);
   };
 
   // Handler para Atualizar Status do Agendamento (PATCH /api/agendamentos/{id})
@@ -790,8 +872,12 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     }
   };
 
-  // Handler para Excluir Agendamento (DELETE /api/agendamentos/{id})
+  // Handler do CEO para Excluir Agendamento (DELETE /api/agendamentos/{id})
   const handleDeleteAppointment = async (id: number | string) => {
+    if (!isCEO) return;
+    if (!window.confirm("Deseja realmente excluir este agendamento?")) {
+      return;
+    }
     setUpdatingAppId(id);
     try {
       await api.deletarAgendamento(id);
@@ -1370,6 +1456,9 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         <section className="mb-6 grid grid-cols-2 sm:grid-cols-5 gap-2.5">
           <button
             onClick={() => {
+              setEditingTxId(null);
+              setAmountInput("");
+              setDescInput("");
               setTxType("entrada");
               setTxDateInput(caixaDateRef || getLocalDateISO());
               if (isCEO && ceoBarberFilter !== "todos") {
@@ -1387,6 +1476,9 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
           <button
             onClick={() => {
+              setEditingTxId(null);
+              setAmountInput("");
+              setDescInput("");
               setTxType("saida");
               setTxCategory("USO DIARIO");
               setTxDateInput(caixaDateRef || getLocalDateISO());
@@ -1405,6 +1497,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
           <button
             onClick={() => {
+              setEditingAppId(null);
+              setClientNameInput("");
+              setServiceInput("");
+              setAppAmountInput("");
+              setTimeInput("");
               setAppDateInput(
                 agendaDateFilter && agendaDateFilter !== "todos"
                   ? agendaDateFilter
@@ -1558,7 +1655,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="flex items-center gap-2.5">
                     <span
                       className={`text-sm sm:text-base font-bold font-mono ${
                         tx.type === "entrada" ? "text-emerald-400" : "text-rose-400"
@@ -1566,6 +1663,33 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                     >
                       {tx.type === "entrada" ? "+" : "-"} R$ {tx.amount.toFixed(2)}
                     </span>
+
+                    {isCEO && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditTransaction(tx)}
+                          disabled={deletingTxId === tx.id}
+                          title="Editar lançamento"
+                          className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-amber-950/40 border border-white/10 hover:border-amber-500/30 text-slate-400 hover:text-amber-300 transition-all disabled:opacity-40"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTransaction(tx)}
+                          disabled={deletingTxId === tx.id}
+                          title="Excluir lançamento"
+                          className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-rose-950/40 border border-white/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 transition-all disabled:opacity-40"
+                        >
+                          {deletingTxId === tx.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -1610,6 +1734,11 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               </div>
               <button
                 onClick={() => {
+                  setEditingAppId(null);
+                  setClientNameInput("");
+                  setServiceInput("");
+                  setAppAmountInput("");
+                  setTimeInput("");
                   setAppDateInput(
                     agendaDateFilter && agendaDateFilter !== "todos"
                       ? agendaDateFilter
@@ -1717,15 +1846,28 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                         </>
                       )}
 
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteAppointment(app.id)}
-                        disabled={isUpdating}
-                        title="Excluir agendamento"
-                        className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-rose-950/40 border border-white/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 transition-all disabled:opacity-40"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {isCEO && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditAppointment(app)}
+                            disabled={isUpdating}
+                            title="Editar agendamento"
+                            className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-amber-950/40 border border-white/10 hover:border-amber-500/30 text-slate-400 hover:text-amber-300 transition-all disabled:opacity-40"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAppointment(app.id)}
+                            disabled={isUpdating}
+                            title="Excluir agendamento"
+                            className="p-1.5 rounded-xl bg-slate-950/60 hover:bg-rose-950/40 border border-white/10 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 transition-all disabled:opacity-40"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 );
@@ -1902,13 +2044,18 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         )}
       </main>
 
-      {/* MODAL 1: NOVO LANÇAMENTO FINANCEIRO (POST /api/caixa) */}
+      {/* MODAL 1: NOVO / EDITAR LANÇAMENTO FINANCEIRO */}
       {isTxModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-white/15 p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/10">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
-                {txType === "entrada" ? (
+                {editingTxId ? (
+                  <>
+                    <Pencil className="w-5 h-5 text-amber-400" />
+                    Editar Lançamento do Caixa
+                  </>
+                ) : txType === "entrada" ? (
                   <>
                     <PlusCircle className="w-5 h-5 text-emerald-400" />
                     Nova Entrada no Caixa
@@ -1921,7 +2068,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 )}
               </h3>
               <button
-                onClick={() => setIsTxModalOpen(false)}
+                onClick={() => {
+                  setIsTxModalOpen(false);
+                  setEditingTxId(null);
+                }}
                 className="text-slate-400 hover:text-white p-1"
               >
                 <X className="w-5 h-5" />
@@ -1929,6 +2079,32 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             </div>
 
             <form onSubmit={handleCreateTransaction} className="space-y-4">
+              {editingTxId && isCEO && (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTxType("entrada")}
+                    className={`h-10 rounded-xl text-xs font-bold uppercase border transition-all ${
+                      txType === "entrada"
+                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-300"
+                        : "bg-slate-950 border-white/10 text-slate-400"
+                    }`}
+                  >
+                    + Entrada
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTxType("saida")}
+                    className={`h-10 rounded-xl text-xs font-bold uppercase border transition-all ${
+                      txType === "saida"
+                        ? "bg-rose-500/20 border-rose-400 text-rose-300"
+                        : "bg-slate-950 border-white/10 text-slate-400"
+                    }`}
+                  >
+                    - Saída / Despesa
+                  </button>
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
                   Valor (R$)
@@ -2072,8 +2248,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               >
                 {isSubmittingTx ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" /> Registrando...
+                    <Loader2 className="w-4 h-4 animate-spin" /> Salvando...
                   </>
+                ) : editingTxId ? (
+                  "Salvar Alterações"
                 ) : (
                   "Confirmar Lançamento"
                 )}
@@ -2083,17 +2261,20 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
         </div>
       )}
 
-      {/* MODAL 2: NOVO AGENDAMENTO */}
+      {/* MODAL 2: NOVO / EDITAR AGENDAMENTO */}
       {isAppModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-white/15 p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/10">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-amber-400" />
-                Novo Agendamento
+                {editingAppId ? "Editar Agendamento" : "Novo Agendamento"}
               </h3>
               <button
-                onClick={() => setIsAppModalOpen(false)}
+                onClick={() => {
+                  setIsAppModalOpen(false);
+                  setEditingAppId(null);
+                }}
                 className="text-slate-400 hover:text-white p-1"
               >
                 <X className="w-5 h-5" />
@@ -2223,6 +2404,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" /> Salvando Agendamento...
                   </>
+                ) : editingAppId ? (
+                  "Salvar Alterações"
                 ) : (
                   "Confirmar Agendamento"
                 )}

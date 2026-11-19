@@ -364,15 +364,11 @@ func (h *AgendamentoHandler) AtualizarStatusAgendamento(w http.ResponseWriter, r
 	json.NewEncoder(w).Encode(a)
 }
 
-// DeletarAgendamento remove um agendamento garantindo que barbeiros só excluam os próprios registros
-// DELETE /api/agendamentos/{id}
-func (h *AgendamentoHandler) DeletarAgendamento(w http.ResponseWriter, r *http.Request) {
+// EditarAgendamento permite ao CEO editar os dados de um agendamento
+// PUT /api/agendamentos/{id}
+func (h *AgendamentoHandler) EditarAgendamento(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	caller, ok := middleware.UsuarioAutenticado(r.Context())
-	if !ok {
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Sessão não autenticada"})
+	if !requireAdminCaller(w, r) {
 		return
 	}
 
@@ -384,29 +380,122 @@ func (h *AgendamentoHandler) DeletarAgendamento(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var barbeiroID int64
-	err = h.db.Pool.QueryRow(r.Context(), "SELECT barbeiro_id FROM agendamentos WHERE id = $1", id).Scan(&barbeiroID)
+	var req domain.NovoAgendamentoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Payload JSON inválido"})
+		return
+	}
+
+	req.ClienteNome = strings.TrimSpace(req.ClienteNome)
+	req.Servico = strings.TrimSpace(req.Servico)
+	if req.ClienteNome == "" || req.Servico == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Nome do cliente e serviço são obrigatórios"})
+		return
+	}
+
+	if math.IsNaN(req.Valor) || math.IsInf(req.Valor, 0) || req.Valor < 0 || req.Valor > 1000000 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "O valor do agendamento é inválido"})
+		return
+	}
+
+	formaNormalizada := domain.FormaPagamento(strings.ToLower(strings.TrimSpace(string(req.FormaPagamento))))
+	if formaNormalizada != domain.PagamentoPix &&
+		formaNormalizada != domain.PagamentoDinheiro &&
+		formaNormalizada != domain.PagamentoCartaoCredito &&
+		formaNormalizada != domain.PagamentoCartaoDebito {
+		formaNormalizada = domain.PagamentoPix
+	}
+
+	var barbeiroNome string
+	if err := h.db.Pool.QueryRow(r.Context(), "SELECT nome FROM usuarios WHERE id = $1", req.BarbeiroID).Scan(&barbeiroNome); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Profissional selecionado não encontrado"})
+		return
+	}
+
+	dataHoraUTC := req.DataHora.UTC()
+	if req.DataHora.IsZero() {
+		dataHoraUTC = time.Now().UTC()
+	}
+
+	var a domain.Agendamento
+	err = h.db.Pool.QueryRow(
+		r.Context(),
+		`UPDATE agendamentos
+		 SET barbeiro_id = $1,
+		     cliente_nome = $2,
+		     servico = $3,
+		     valor = $4,
+		     forma_pagamento = $5,
+		     data_hora = $6
+		 WHERE id = $7
+		 RETURNING id, barbeiro_id, cliente_nome, servico, COALESCE(valor, 0), COALESCE(forma_pagamento, 'pix'), data_hora, status, criado_em`,
+		req.BarbeiroID,
+		req.ClienteNome,
+		req.Servico,
+		req.Valor,
+		formaNormalizada,
+		dataHoraUTC,
+		id,
+	).Scan(
+		&a.ID,
+		&a.BarbeiroID,
+		&a.ClienteNome,
+		&a.Servico,
+		&a.Valor,
+		&a.FormaPagamento,
+		&a.DataHora,
+		&a.Status,
+		&a.CriadoEm,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Agendamento não encontrado"})
 			return
 		}
+		log.Printf("[AgendamentoHandler.EditarAgendamento] erro update: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar agendamento: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao editar agendamento"})
 		return
 	}
 
-	if !domain.IsAdminRole(caller.Papel) && barbeiroID != caller.ID {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Sem permissão para excluir agendamento de outro profissional"})
+	a.BarbeiroNome = barbeiroNome
+	a.HoraFormat = h.formatHoraLocal(a.DataHora)
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(a)
+}
+
+// DeletarAgendamento permite ao CEO excluir um agendamento
+// DELETE /api/agendamentos/{id}
+func (h *AgendamentoHandler) DeletarAgendamento(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if !requireAdminCaller(w, r) {
 		return
 	}
 
-	_, err = h.db.Pool.Exec(r.Context(), "DELETE FROM agendamentos WHERE id = $1", id)
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "ID do agendamento inválido"})
+		return
+	}
+
+	cmdTag, err := h.db.Pool.Exec(r.Context(), "DELETE FROM agendamentos WHERE id = $1", id)
 	if err != nil {
+		log.Printf("[AgendamentoHandler.DeletarAgendamento] erro delete: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao excluir agendamento: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao excluir agendamento"})
+		return
+	}
+	if cmdTag.RowsAffected() == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Agendamento não encontrado"})
 		return
 	}
 

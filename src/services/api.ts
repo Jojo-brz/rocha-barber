@@ -343,6 +343,62 @@ export const api = {
     };
   },
 
+  async editarMovimentacao(
+    id: number | string,
+    payload: {
+      tipo: TransactionType;
+      categoria?: string;
+      descricao: string;
+      valor: number;
+      forma_pagamento: PaymentMethod;
+      barbeiro_id?: number | null;
+      data?: string;
+    }
+  ): Promise<Transaction> {
+    const raw = await request<{
+      id: number;
+      barbeiro_id?: number;
+      barbeiro_nome?: string;
+      tipo: TransactionType;
+      categoria?: string;
+      descricao: string;
+      valor: number;
+      forma_pagamento: PaymentMethod;
+      criado_em: string;
+      data_formatada?: string;
+      hora_formatada?: string;
+    }>(`/api/caixa/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    const { date: dateStr, timestamp: timeStr } = formatTxDateTime(
+      raw.criado_em,
+      raw.data_formatada,
+      raw.hora_formatada
+    );
+
+    return {
+      id: raw.id,
+      type: raw.tipo,
+      category: raw.categoria || payload.categoria,
+      description: raw.descricao,
+      amount: Number(raw.valor),
+      paymentMethod: raw.forma_pagamento,
+      barberId: raw.barbeiro_id,
+      barberName: raw.barbeiro_nome || "Registrado",
+      date: dateStr,
+      timestamp: timeStr,
+      createdAt: raw.criado_em,
+    };
+  },
+
+  async deletarMovimentacao(id: number | string): Promise<void> {
+    await request(`/api/caixa/${id}`, {
+      method: "DELETE",
+    });
+  },
+
   // 3. Agendamentos
   async getAgendamentos(
     barbeiroId?: number | string,
@@ -373,10 +429,16 @@ export const api = {
     >(endpoint, { method: "GET" });
 
     return (raw || []).map((a) => {
+      const d = new Date(a.data_hora);
+      const valid = !isNaN(d.getTime());
+      const dateISO = valid
+        ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+            d.getDate()
+          ).padStart(2, "0")}`
+        : undefined;
       let timeStr = a.hora_formatada;
       if (!timeStr) {
-        const d = new Date(a.data_hora);
-        timeStr = !isNaN(d.getTime())
+        timeStr = valid
           ? `${d.getHours().toString().padStart(2, "0")}:${d
               .getMinutes()
               .toString()
@@ -390,6 +452,7 @@ export const api = {
         service: a.servico,
         amount: Number(a.valor || 0),
         paymentMethod: a.forma_pagamento || "pix",
+        dateISO,
         time: timeStr,
         barberId: a.barbeiro_id,
         barberName: a.barbeiro_nome || "Barbeiro",
@@ -461,6 +524,46 @@ export const api = {
       service: raw.servico,
       amount: Number(raw.valor || 0),
       paymentMethod: raw.forma_pagamento || "pix",
+      time: raw.hora_formatada || "12:00",
+      barberId: raw.barbeiro_id,
+      barberName: raw.barbeiro_nome || "Barbeiro",
+      status: raw.status,
+    };
+  },
+
+  async editarAgendamento(
+    id: number | string,
+    payload: {
+      barbeiro_id: number;
+      cliente_nome: string;
+      servico: string;
+      valor?: number;
+      forma_pagamento?: PaymentMethod;
+      data_hora: string;
+    }
+  ): Promise<Appointment> {
+    const raw = await request<{
+      id: number;
+      barbeiro_id: number;
+      barbeiro_nome?: string;
+      cliente_nome: string;
+      servico: string;
+      valor?: number;
+      forma_pagamento?: PaymentMethod;
+      data_hora: string;
+      hora_formatada?: string;
+      status: AppointmentStatus;
+    }>(`/api/agendamentos/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      id: raw.id,
+      clientName: raw.cliente_nome,
+      service: raw.servico,
+      amount: Number(raw.valor ?? payload.valor ?? 0),
+      paymentMethod: raw.forma_pagamento || payload.forma_pagamento || "pix",
       time: raw.hora_formatada || "12:00",
       barberId: raw.barbeiro_id,
       barberName: raw.barbeiro_nome || "Barbeiro",

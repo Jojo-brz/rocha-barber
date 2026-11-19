@@ -46,6 +46,7 @@ export interface Appointment {
   service: string;
   amount?: number;
   paymentMethod?: PaymentMethod;
+  dateISO?: string;
   time: string;
   barberId: number | string;
   barberName: string;
