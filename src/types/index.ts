@@ -22,9 +22,12 @@ export interface PeriodBreakdown {
   totalMovimentacoes: number;
 }
 
+export type ExpenseCategory = "USO DIARIO" | "DESPESA GERAL";
+
 export interface Transaction {
   id: number | string;
   type: TransactionType;
+  category?: string;
   description: string;
   amount: number;
   paymentMethod: PaymentMethod;
@@ -41,6 +44,8 @@ export interface Appointment {
   id: number | string;
   clientName: string;
   service: string;
+  amount?: number;
+  paymentMethod?: PaymentMethod;
   time: string;
   barberId: number | string;
   barberName: string;

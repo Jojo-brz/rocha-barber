@@ -104,8 +104,9 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	isAdmin := domain.IsAdminRole(caller.Papel)
 	var filtroBarbeiroID *int64
-	if !domain.IsAdminRole(caller.Papel) {
+	if !isAdmin {
 		ownID := caller.ID
 		filtroBarbeiroID = &ownID
 	} else {
@@ -135,7 +136,8 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 1. Consolidado simultâneo Diário, Semanal (segunda a domingo) e Mensal para a data de referência (com filtro RBAC)
+	// 1. Consolidado simultâneo Diário, Semanal (segunda a domingo) e Mensal para a data de referência.
+	// Apenas o CEO/Admin ($3 = true) visualiza as despesas (saídas); barbeiros ($3 = false) veem apenas entradas.
 	resumoPeriodosQuery := `
 		WITH mov_local AS (
 			SELECT
@@ -148,6 +150,7 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 				OR date_trunc('week', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('week', $1::date)
 			)
 			AND ($2::bigint IS NULL OR m.barbeiro_id = $2)
+			AND ($3::boolean OR m.tipo = 'entrada')
 		)
 		SELECT
 			COALESCE(SUM(CASE WHEN data_local = $1::date AND tipo = 'entrada' THEN valor ELSE 0 END), 0),
@@ -165,7 +168,7 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 	var periodos domain.FaturamentoPeriodos
 	periodos.DataReferencia = dataRefStr
 
-	err = h.db.Pool.QueryRow(r.Context(), resumoPeriodosQuery, dataRefStr, filtroBarbeiroID).Scan(
+	err = h.db.Pool.QueryRow(r.Context(), resumoPeriodosQuery, dataRefStr, filtroBarbeiroID, isAdmin).Scan(
 		&periodos.Diario.Entradas,
 		&periodos.Diario.Saidas,
 		&periodos.Diario.TotalMovimentacoes,
@@ -187,11 +190,11 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 	periodos.Semanal.SaldoLiquido = periodos.Semanal.Entradas - periodos.Semanal.Saidas
 	periodos.Mensal.SaldoLiquido = periodos.Mensal.Entradas - periodos.Mensal.Saidas
 
-	// 2. Movimentações do período selecionado (100% parametrizada com $1, $2 e $3 sem fmt.Sprintf)
+	// 2. Movimentações do período selecionado (100% parametrizada com $1, $2, $3 e $4)
 	const query = `
 		SELECT
 			m.id, m.barbeiro_id, COALESCE(u.nome, 'Geral/Caixa') as barbeiro_nome,
-			m.tipo, m.descricao, m.valor, COALESCE(m.forma_pagamento, 'dinheiro'), m.criado_em
+			m.tipo, COALESCE(m.categoria, ''), m.descricao, m.valor, COALESCE(m.forma_pagamento, 'dinheiro'), m.criado_em
 		FROM movimentacoes_caixa m
 		LEFT JOIN usuarios u ON m.barbeiro_id = u.id
 		WHERE (
@@ -200,10 +203,11 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 			OR ($3 = 'mensal' AND date_trunc('month', (m.criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date) = date_trunc('month', $1::date))
 		)
 		AND ($2::bigint IS NULL OR m.barbeiro_id = $2)
+		AND ($4::boolean OR m.tipo = 'entrada')
 		ORDER BY m.criado_em DESC;
 	`
 
-	rows, err := h.db.Pool.Query(r.Context(), query, dataRefStr, filtroBarbeiroID, periodo)
+	rows, err := h.db.Pool.Query(r.Context(), query, dataRefStr, filtroBarbeiroID, periodo, isAdmin)
 	if err != nil {
 		log.Printf("[CaixaHandler.ObterCaixaDiario] erro ao buscar movimentacoes: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -223,6 +227,7 @@ func (h *CaixaHandler) ObterCaixaDiario(w http.ResponseWriter, r *http.Request) 
 			&m.BarbeiroID,
 			&m.BarbeiroNome,
 			&m.Tipo,
+			&m.Categoria,
 			&m.Descricao,
 			&m.Valor,
 			&m.FormaPagamento,
@@ -337,9 +342,23 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Normaliza categoria de despesa ("USO DIARIO" ou "DESPESA GERAL")
+	categoriaNormalizada := strings.ToUpper(strings.TrimSpace(req.Categoria))
+	if tipoNormalizado == domain.TipoSaida {
+		if categoriaNormalizada == "USO DIÁRIO" || categoriaNormalizada == "USO_DIARIO" || categoriaNormalizada == "USO DIARIO" {
+			categoriaNormalizada = "USO DIARIO"
+		} else if categoriaNormalizada == "" {
+			categoriaNormalizada = "DESPESA GERAL"
+		}
+	} else {
+		categoriaNormalizada = ""
+	}
+
 	if strings.TrimSpace(req.Descricao) == "" {
 		if tipoNormalizado == domain.TipoEntrada {
 			req.Descricao = "Serviço Avulso de Bancada"
+		} else if categoriaNormalizada == "USO DIARIO" {
+			req.Descricao = "Compra / Insumo de Uso Diário"
 		} else {
 			req.Descricao = "Despesa Operacional"
 		}
@@ -353,8 +372,8 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 	}
 
 	query := `
-		INSERT INTO movimentacoes_caixa (barbeiro_id, tipo, descricao, valor, forma_pagamento, criado_em)
-		VALUES ($1, $2, $3, $4, $5, ($6::timestamptz AT TIME ZONE 'UTC'))
+		INSERT INTO movimentacoes_caixa (barbeiro_id, tipo, categoria, descricao, valor, forma_pagamento, criado_em)
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, ($7::timestamptz AT TIME ZONE 'UTC'))
 		RETURNING id, criado_em;
 	`
 
@@ -365,6 +384,7 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 		query,
 		req.BarbeiroID,
 		tipoNormalizado,
+		categoriaNormalizada,
 		req.Descricao,
 		req.Valor,
 		formaNormalizada,
@@ -383,6 +403,7 @@ func (h *CaixaHandler) RegistrarMovimentacao(w http.ResponseWriter, r *http.Requ
 		BarbeiroID:     req.BarbeiroID,
 		BarbeiroNome:   targetBarbeiroNome,
 		Tipo:           tipoNormalizado,
+		Categoria:      categoriaNormalizada,
 		Descricao:      req.Descricao,
 		Valor:          req.Valor,
 		FormaPagamento: formaNormalizada,

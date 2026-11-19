@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -73,7 +74,8 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 	const query = `
 		SELECT 
 			a.id, a.barbeiro_id, COALESCE(u.nome, 'Barbeiro') as barbeiro_nome,
-			a.cliente_nome, a.servico, a.data_hora, a.status, a.criado_em
+			a.cliente_nome, a.servico, COALESCE(a.valor, 0), COALESCE(a.forma_pagamento, 'pix'),
+			a.data_hora, a.status, a.criado_em
 		FROM agendamentos a
 		LEFT JOIN usuarios u ON a.barbeiro_id = u.id
 		WHERE ($1::bigint IS NULL OR a.barbeiro_id = $1)
@@ -99,6 +101,8 @@ func (h *AgendamentoHandler) ListarAgendamentos(w http.ResponseWriter, r *http.R
 			&a.BarbeiroNome,
 			&a.ClienteNome,
 			&a.Servico,
+			&a.Valor,
+			&a.FormaPagamento,
 			&a.DataHora,
 			&a.Status,
 			&a.CriadoEm,
@@ -152,6 +156,20 @@ func (h *AgendamentoHandler) CriarAgendamento(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if math.IsNaN(req.Valor) || math.IsInf(req.Valor, 0) || req.Valor < 0 || req.Valor > 1000000 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "O valor do agendamento é inválido"})
+		return
+	}
+
+	formaNormalizada := domain.FormaPagamento(strings.ToLower(strings.TrimSpace(string(req.FormaPagamento))))
+	if formaNormalizada != domain.PagamentoPix &&
+		formaNormalizada != domain.PagamentoDinheiro &&
+		formaNormalizada != domain.PagamentoCartaoCredito &&
+		formaNormalizada != domain.PagamentoCartaoDebito {
+		formaNormalizada = domain.PagamentoPix
+	}
+
 	// Isolamento RBAC: barbeiro só pode criar agendamentos para si mesmo
 	if !domain.IsAdminRole(caller.Papel) {
 		req.BarbeiroID = caller.ID
@@ -164,7 +182,7 @@ func (h *AgendamentoHandler) CriarAgendamento(w http.ResponseWriter, r *http.Req
 	}
 	dataHoraUTC := req.DataHora.UTC()
 
-	// Valida se o barbeiro existe no Neon e obtém seu nome
+	// Valida se o barbeiro existe e obtém seu nome
 	var barbeiroNome string
 	err := h.db.Pool.QueryRow(r.Context(), "SELECT nome FROM usuarios WHERE id = $1", req.BarbeiroID).Scan(&barbeiroNome)
 	if err != nil {
@@ -174,18 +192,20 @@ func (h *AgendamentoHandler) CriarAgendamento(w http.ResponseWriter, r *http.Req
 	}
 
 	query := `
-		INSERT INTO agendamentos (barbeiro_id, cliente_nome, servico, data_hora, status)
-		VALUES ($1, $2, $3, $4, 'agendado')
+		INSERT INTO agendamentos (barbeiro_id, cliente_nome, servico, valor, forma_pagamento, data_hora, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'agendado')
 		RETURNING id, criado_em;
 	`
 
 	a := domain.Agendamento{
-		BarbeiroID:   req.BarbeiroID,
-		BarbeiroNome: barbeiroNome,
-		ClienteNome:  req.ClienteNome,
-		Servico:      req.Servico,
-		DataHora:     dataHoraUTC,
-		Status:       domain.StatusAgendado,
+		BarbeiroID:     req.BarbeiroID,
+		BarbeiroNome:   barbeiroNome,
+		ClienteNome:    req.ClienteNome,
+		Servico:        req.Servico,
+		Valor:          req.Valor,
+		FormaPagamento: formaNormalizada,
+		DataHora:       dataHoraUTC,
+		Status:         domain.StatusAgendado,
 	}
 
 	err = h.db.Pool.QueryRow(
@@ -194,6 +214,8 @@ func (h *AgendamentoHandler) CriarAgendamento(w http.ResponseWriter, r *http.Req
 		req.BarbeiroID,
 		req.ClienteNome,
 		req.Servico,
+		req.Valor,
+		formaNormalizada,
 		dataHoraUTC,
 	).Scan(&a.ID, &a.CriadoEm)
 
@@ -238,26 +260,41 @@ func (h *AgendamentoHandler) AtualizarStatusAgendamento(w http.ResponseWriter, r
 		return
 	}
 
-	var barbeiroID int64
-	err = h.db.Pool.QueryRow(r.Context(), "SELECT barbeiro_id FROM agendamentos WHERE id = $1", id).Scan(&barbeiroID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Agendamento não encontrado"})
-			return
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar agendamento: " + err.Error()})
-		return
-	}
-
-	// Barbeiro só pode alterar agendamentos próprios; CEO/admin pode alterar qualquer um
 	caller, ok := middleware.UsuarioAutenticado(r.Context())
 	if !ok {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Sessão não autenticada"})
 		return
 	}
+
+	tx, err := h.db.Pool.Begin(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao iniciar atualização do agendamento"})
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var barbeiroID int64
+	var statusAnterior domain.StatusAgendamento
+	err = tx.QueryRow(
+		r.Context(),
+		"SELECT barbeiro_id, status FROM agendamentos WHERE id = $1 FOR UPDATE",
+		id,
+	).Scan(&barbeiroID, &statusAnterior)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Agendamento não encontrado"})
+			return
+		}
+		log.Printf("[AgendamentoHandler.AtualizarStatusAgendamento] erro select: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao consultar agendamento"})
+		return
+	}
+
+	// Barbeiro só pode alterar agendamentos próprios; CEO/admin pode alterar qualquer um
 	if !domain.IsAdminRole(caller.Papel) && barbeiroID != caller.ID {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Sem permissão para alterar agendamento de outro profissional"})
@@ -265,13 +302,13 @@ func (h *AgendamentoHandler) AtualizarStatusAgendamento(w http.ResponseWriter, r
 	}
 
 	var a domain.Agendamento
-	err = h.db.Pool.QueryRow(
+	err = tx.QueryRow(
 		r.Context(),
 		`UPDATE agendamentos a
 		 SET status = $1
 		 FROM (SELECT id, COALESCE(nome, 'Barbeiro') AS nome FROM usuarios) u
 		 WHERE a.id = $2 AND (a.barbeiro_id = u.id OR a.barbeiro_id IS NULL)
-		 RETURNING a.id, a.barbeiro_id, u.nome, a.cliente_nome, a.servico, a.data_hora, a.status, a.criado_em`,
+		 RETURNING a.id, a.barbeiro_id, u.nome, a.cliente_nome, a.servico, COALESCE(a.valor, 0), COALESCE(a.forma_pagamento, 'pix'), a.data_hora, a.status, a.criado_em`,
 		statusNormalizado,
 		id,
 	).Scan(
@@ -280,14 +317,44 @@ func (h *AgendamentoHandler) AtualizarStatusAgendamento(w http.ResponseWriter, r
 		&a.BarbeiroNome,
 		&a.ClienteNome,
 		&a.Servico,
+		&a.Valor,
+		&a.FormaPagamento,
 		&a.DataHora,
 		&a.Status,
 		&a.CriadoEm,
 	)
 
 	if err != nil {
+		log.Printf("[AgendamentoHandler.AtualizarStatusAgendamento] erro update: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao atualizar status do agendamento: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao atualizar status do agendamento"})
+		return
+	}
+
+	// Quando o serviço é concluído pela primeira vez e possui valor > 0, lança automaticamente no faturamento do barbeiro
+	if statusNormalizado == domain.StatusConcluido && statusAnterior != domain.StatusConcluido && a.Valor > 0 {
+		descricaoCaixa := a.Servico + " - " + a.ClienteNome
+		_, err = tx.Exec(
+			r.Context(),
+			`INSERT INTO movimentacoes_caixa (barbeiro_id, tipo, descricao, valor, forma_pagamento, criado_em)
+			 VALUES ($1, 'entrada', $2, $3, $4, ($5::timestamptz AT TIME ZONE 'UTC'))`,
+			a.BarbeiroID,
+			descricaoCaixa,
+			a.Valor,
+			a.FormaPagamento,
+			a.DataHora.UTC(),
+		)
+		if err != nil {
+			log.Printf("[AgendamentoHandler.AtualizarStatusAgendamento] erro insert caixa: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao registrar faturamento do agendamento concluído"})
+			return
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Erro ao confirmar conclusão do agendamento"})
 		return
 	}
 

@@ -226,6 +226,7 @@ export const api = {
         barbeiro_id?: number | null;
         barbeiro_nome?: string;
         tipo: TransactionType;
+        categoria?: string;
         descricao: string;
         valor: number;
         forma_pagamento: PaymentMethod;
@@ -245,6 +246,7 @@ export const api = {
       return {
         id: m.id,
         type: m.tipo,
+        category: m.categoria || undefined,
         description: m.descricao,
         amount: Number(m.valor),
         paymentMethod: m.forma_pagamento,
@@ -296,6 +298,7 @@ export const api = {
 
   async criarMovimentacao(payload: {
     tipo: TransactionType;
+    categoria?: string;
     descricao: string;
     valor: number;
     forma_pagamento: PaymentMethod;
@@ -307,6 +310,7 @@ export const api = {
       barbeiro_id?: number;
       barbeiro_nome?: string;
       tipo: TransactionType;
+      categoria?: string;
       descricao: string;
       valor: number;
       forma_pagamento: PaymentMethod;
@@ -327,6 +331,7 @@ export const api = {
     return {
       id: raw.id,
       type: raw.tipo,
+      category: raw.categoria || payload.categoria,
       description: raw.descricao,
       amount: Number(raw.valor),
       paymentMethod: raw.forma_pagamento,
@@ -359,6 +364,8 @@ export const api = {
         barbeiro_nome?: string;
         cliente_nome: string;
         servico: string;
+        valor?: number;
+        forma_pagamento?: PaymentMethod;
         data_hora: string;
         hora_formatada?: string;
         status: AppointmentStatus;
@@ -381,6 +388,8 @@ export const api = {
         id: a.id,
         clientName: a.cliente_nome,
         service: a.servico,
+        amount: Number(a.valor || 0),
+        paymentMethod: a.forma_pagamento || "pix",
         time: timeStr,
         barberId: a.barbeiro_id,
         barberName: a.barbeiro_nome || "Barbeiro",
@@ -393,6 +402,8 @@ export const api = {
     barbeiro_id: number;
     cliente_nome: string;
     servico: string;
+    valor?: number;
+    forma_pagamento?: PaymentMethod;
     data_hora: string;
   }): Promise<Appointment> {
     const raw = await request<{
@@ -401,6 +412,8 @@ export const api = {
       barbeiro_nome?: string;
       cliente_nome: string;
       servico: string;
+      valor?: number;
+      forma_pagamento?: PaymentMethod;
       data_hora: string;
       hora_formatada?: string;
       status: AppointmentStatus;
@@ -413,6 +426,8 @@ export const api = {
       id: raw.id,
       clientName: raw.cliente_nome,
       service: raw.servico,
+      amount: Number(raw.valor ?? payload.valor ?? 0),
+      paymentMethod: raw.forma_pagamento || payload.forma_pagamento || "pix",
       time: raw.hora_formatada || "12:00",
       barberId: raw.barbeiro_id,
       barberName: raw.barbeiro_nome || "Barbeiro",
@@ -430,6 +445,8 @@ export const api = {
       barbeiro_nome?: string;
       cliente_nome: string;
       servico: string;
+      valor?: number;
+      forma_pagamento?: PaymentMethod;
       data_hora: string;
       hora_formatada?: string;
       status: AppointmentStatus;
@@ -442,6 +459,8 @@ export const api = {
       id: raw.id,
       clientName: raw.cliente_nome,
       service: raw.servico,
+      amount: Number(raw.valor || 0),
+      paymentMethod: raw.forma_pagamento || "pix",
       time: raw.hora_formatada || "12:00",
       barberId: raw.barbeiro_id,
       barberName: raw.barbeiro_nome || "Barbeiro",

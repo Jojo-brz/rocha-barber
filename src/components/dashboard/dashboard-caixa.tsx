@@ -9,6 +9,7 @@ import {
   MaterialRequest,
   PaymentMethod,
   TransactionType,
+  ExpenseCategory,
   DailySummary,
   CaixaPeriod,
   UserRole,
@@ -212,6 +213,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   // Modal de Transação (Entrada/Saída)
   const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
   const [txType, setTxType] = useState<TransactionType>("entrada");
+  const [txCategory, setTxCategory] = useState<ExpenseCategory>("USO DIARIO");
   const [amountInput, setAmountInput] = useState<string>("");
   const [descInput, setDescInput] = useState<string>("");
   const [txDateInput, setTxDateInput] = useState<string>(() => getLocalDateISO());
@@ -224,6 +226,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
   const [isAppModalOpen, setIsAppModalOpen] = useState<boolean>(false);
   const [clientNameInput, setClientNameInput] = useState<string>("");
   const [serviceInput, setServiceInput] = useState<string>("");
+  const [appAmountInput, setAppAmountInput] = useState<string>("");
+  const [appPaymentMethod, setAppPaymentMethod] = useState<PaymentMethod>("pix");
   const [appDateInput, setAppDateInput] = useState<string>(() => getLocalDateISO());
   const [timeInput, setTimeInput] = useState<string>("");
   const [appBarberId, setAppBarberId] = useState<number | string>(currentUser.id);
@@ -330,9 +334,17 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
     setIsSubmittingTx(true);
     try {
+      const defaultDesc =
+        txType === "entrada"
+          ? "Serviço de Bancada"
+          : txCategory === "USO DIARIO"
+          ? "Insumo / Compra - Uso Diário"
+          : "Despesa Operacional";
+
       await api.criarMovimentacao({
         tipo: txType,
-        descricao: descInput.trim() || (txType === "entrada" ? "Serviço de Bancada" : "Despesa Operacional"),
+        categoria: txType === "saida" ? txCategory : undefined,
+        descricao: descInput.trim() || defaultDesc,
         valor: val,
         forma_pagamento: paymentMethod,
         barbeiro_id: targetBarberId,
@@ -343,6 +355,10 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       setAmountInput("");
       setDescInput("");
       await carregarDados(true);
+
+      if (!isCEO && txType === "saida") {
+        alert("Despesa enviada com sucesso para o controle do CEO!");
+      }
     } catch (err: any) {
       alert(err.message || "Erro ao registrar no caixa.");
     } finally {
@@ -719,6 +735,15 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
     e.preventDefault();
     if (!clientNameInput.trim() || !serviceInput.trim() || !timeInput) return;
 
+    let parsedValor = 0;
+    if (appAmountInput.trim()) {
+      parsedValor = parseCurrencyInput(appAmountInput);
+      if (isNaN(parsedValor) || parsedValor < 0) {
+        alert("Informe um valor válido para o serviço (ex: 45,00).");
+        return;
+      }
+    }
+
     const baseDate = appDateInput || getLocalDateISO();
     const [year, month, day] = baseDate.split("-").map(Number);
     const [hours, minutes] = timeInput.split(":").map(Number);
@@ -730,6 +755,8 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       await api.criarAgendamento({
         cliente_nome: clientNameInput.trim(),
         servico: serviceInput.trim(),
+        valor: parsedValor,
+        forma_pagamento: appPaymentMethod,
         data_hora: scheduleDate.toISOString(),
         barbeiro_id: targetBarberId,
       });
@@ -737,6 +764,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
       setIsAppModalOpen(false);
       setClientNameInput("");
       setServiceInput("");
+      setAppAmountInput("");
       setTimeInput("");
       await carregarDados(true);
     } catch (err: any) {
@@ -1196,19 +1224,27 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
 
         {/* 1. CARDS DE RESUMO DO CAIXA ({PERIOD_LABELS[caixaPeriod]}) */}
         {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6 animate-pulse">
+          <div
+            className={`grid grid-cols-1 ${
+              isCEO ? "md:grid-cols-3" : "md:grid-cols-2"
+            } gap-3.5 mb-6 animate-pulse`}
+          >
             <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />
             <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />
-            <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />
+            {isCEO && <div className="h-36 rounded-2xl bg-slate-900/60 border border-white/5" />}
           </div>
         ) : (
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-3.5 mb-6 animate-fade-up">
-            {/* Card 1: Saldo Líquido do Período */}
+          <section
+            className={`grid grid-cols-1 ${
+              isCEO ? "md:grid-cols-3" : "md:grid-cols-2"
+            } gap-3.5 mb-6 animate-fade-up`}
+          >
+            {/* Card 1: Saldo Líquido (CEO) / Meu Faturamento (Barbeiro) */}
             <div className="relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-[#0c1815] via-[#0f172a] to-[#07090e] border border-emerald-500/30 shadow-emerald-glow card-hover">
               <div className="flex items-center justify-between text-slate-400 mb-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
                   <Wallet className="w-4 h-4" />{" "}
-                  {isCEO ? "Saldo Líquido" : "Meu Saldo Líquido"} ({PERIOD_LABELS[caixaPeriod]})
+                  {isCEO ? "Saldo Líquido" : "Meu Faturamento"} ({PERIOD_LABELS[caixaPeriod]})
                 </span>
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-medium">
                   {formatDateISOToBR(caixaDateRef)}
@@ -1219,11 +1255,19 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               </div>
               <div className="mt-3 flex items-center justify-between text-xs text-slate-400 border-t border-emerald-500/10 pt-2.5">
                 <span>
-                  Entradas: <strong className="text-emerald-400">R$ {caixaData.totalEntradas.toFixed(2)}</strong>
+                  Entradas:{" "}
+                  <strong className="text-emerald-400">
+                    R$ {caixaData.totalEntradas.toFixed(2)}
+                  </strong>
                 </span>
-                <span>
-                  Saídas: <strong className="text-rose-400">R$ {caixaData.totalSaidas.toFixed(2)}</strong>
-                </span>
+                {isCEO && (
+                  <span>
+                    Saídas:{" "}
+                    <strong className="text-rose-400">
+                      R$ {caixaData.totalSaidas.toFixed(2)}
+                    </strong>
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1248,26 +1292,33 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
               </p>
             </div>
 
-            {/* Card 3: Saídas e Insumos */}
-            <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between card-hover">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                  <TrendingDown className="w-4 h-4 text-rose-400" />{" "}
-                  {isCEO ? "Despesas & Insumos" : "Minhas Saídas"}
-                </span>
-                <span className="text-xs font-mono text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-md">
-                  Saídas
-                </span>
+            {/* Card 3: Saídas e Insumos (EXCLUSIVO CEO) */}
+            {isCEO && (
+              <div className="p-5 rounded-2xl bg-slate-900/60 backdrop-blur-md border border-white/10 flex flex-col justify-between card-hover">
+                <div className="flex items-center justify-between text-slate-400 mb-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                    <TrendingDown className="w-4 h-4 text-rose-400" /> Despesas &amp; Insumos
+                  </span>
+                  <span className="text-xs font-mono text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-md">
+                    Visão CEO
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-rose-400">
+                  R$ {caixaData.totalSaidas.toFixed(2).replace(".", ",")}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-2 flex items-center justify-between">
+                  <span>Uso Diário &amp; Operacional</span>
+                  <span className="font-mono text-amber-300">
+                    Uso Diário: R${" "}
+                    {caixaData.movimentacoes
+                      .filter((m) => m.type === "saida" && m.category === "USO DIARIO")
+                      .reduce((acc, m) => acc + m.amount, 0)
+                      .toFixed(2)
+                      .replace(".", ",")}
+                  </span>
+                </p>
               </div>
-              <div className="text-2xl font-bold text-rose-400">
-                R$ {caixaData.totalSaidas.toFixed(2).replace(".", ",")}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-2">
-                {isCEO
-                  ? "Gastos operacionais e retiradas da barbearia"
-                  : "Suas despesas ou retiradas vinculadas ao seu perfil"}
-              </p>
-            </div>
+            )}
           </section>
         )}
 
@@ -1337,6 +1388,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
           <button
             onClick={() => {
               setTxType("saida");
+              setTxCategory("USO DIARIO");
               setTxDateInput(caixaDateRef || getLocalDateISO());
               if (isCEO && ceoBarberFilter !== "todos") {
                 setSelectedBarberId(ceoBarberFilter);
@@ -1348,7 +1400,7 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
             className="p-3.5 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all shadow-sm"
           >
             <MinusCircle className="w-5 h-5" />
-            - Lançar Saída
+            {isCEO ? "- Lançar Saída" : "- Enviar Despesa"}
           </button>
 
           <button
@@ -1473,9 +1525,22 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                       {tx.type === "entrada" ? "+" : "-"}
                     </div>
                     <div>
-                      <p className="text-sm font-semibold text-slate-200">
-                        {tx.description}
-                      </p>
+                      <div className="flex items-center flex-wrap gap-2">
+                        <p className="text-sm font-semibold text-slate-200">
+                          {tx.description}
+                        </p>
+                        {tx.type === "saida" && tx.category && (
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                              tx.category === "USO DIARIO"
+                                ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                                : "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                            }`}
+                          >
+                            {tx.category === "USO DIARIO" ? "USO DIÁRIO" : tx.category}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center flex-wrap gap-2 text-[11px] text-slate-400 mt-0.5">
                         <span className="text-amber-300/90 font-medium">
                           {tx.barberName}
@@ -1593,9 +1658,22 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                         {app.time}
                       </div>
                       <div>
-                        <h4 className="text-sm font-bold text-white">
-                          {app.clientName}
-                        </h4>
+                        <div className="flex items-center flex-wrap gap-2">
+                          <h4 className="text-sm font-bold text-white">
+                            {app.clientName}
+                          </h4>
+                          {(app.amount || 0) > 0 && (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono text-xs font-bold">
+                              R$ {(app.amount || 0).toFixed(2).replace(".", ",")} •{" "}
+                              {(app.paymentMethod || "pix").replace("_", " ").toUpperCase()}
+                            </span>
+                          )}
+                          {app.status === "concluido" && (app.amount || 0) > 0 && (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-bold uppercase">
+                              ✓ Faturado no Caixa
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-300">{app.service}</p>
                         <p className="text-[11px] text-slate-500 mt-1">
                           Profissional: <span className="text-slate-300">{app.barberName}</span>
@@ -1867,6 +1945,42 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                 />
               </div>
 
+              {txType === "saida" && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Classificação da Despesa
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      {
+                        id: "USO DIARIO" as ExpenseCategory,
+                        label: "USO DIÁRIO",
+                        sub: "Insumos & Compras do dia",
+                      },
+                      {
+                        id: "DESPESA GERAL" as ExpenseCategory,
+                        label: "GERAL / FIXA",
+                        sub: "Outras despesas",
+                      },
+                    ].map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setTxCategory(cat.id)}
+                        className={`p-2.5 rounded-xl border text-left transition-all ${
+                          txCategory === cat.id
+                            ? "bg-rose-500/20 border-rose-400 text-rose-200 ring-1 ring-rose-500/40"
+                            : "bg-slate-950 border-white/10 text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        <div className="text-xs font-extrabold">{cat.label}</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">{cat.sub}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
                   Descrição da Movimentação
@@ -2042,6 +2156,40 @@ export const DashboardCaixa: React.FC<DashboardCaixaProps> = ({
                   className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
                 />
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Valor p/ Faturamento ao Concluir (R$)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Ex: 45,00"
+                    value={appAmountInput}
+                    onChange={(e) => setAppAmountInput(e.target.value)}
+                    className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm font-mono font-bold text-emerald-400 focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Forma de Pagamento
+                  </label>
+                  <select
+                    value={appPaymentMethod}
+                    onChange={(e) => setAppPaymentMethod(e.target.value as PaymentMethod)}
+                    className="w-full h-10 px-3 rounded-xl bg-slate-950 border border-white/15 text-sm text-white focus:outline-none focus:border-amber-400"
+                  >
+                    <option value="pix">PIX</option>
+                    <option value="dinheiro">Dinheiro</option>
+                    <option value="cartao_credito">Cartão de Crédito</option>
+                    <option value="cartao_debito">Cartão de Débito</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-400 -mt-2">
+                Ao clicar em <strong className="text-emerald-400">Concluir</strong> na agenda, este valor será lançado automaticamente no faturamento.
+              </p>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">

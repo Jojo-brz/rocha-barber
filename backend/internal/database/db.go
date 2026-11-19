@@ -73,20 +73,28 @@ func (db *DB) verificarSchema(ctx context.Context) error {
 			barbeiro_id INT REFERENCES usuarios(id) ON DELETE CASCADE,
 			cliente_nome VARCHAR(100) NOT NULL,
 			servico VARCHAR(100) NOT NULL,
+			valor NUMERIC(10, 2) DEFAULT 0,
+			forma_pagamento VARCHAR(30) DEFAULT 'pix',
 			data_hora TIMESTAMP NOT NULL,
 			status VARCHAR(20) DEFAULT 'agendado' CHECK (status IN ('agendado', 'concluido', 'cancelado')),
 			criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
 
+		`ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS valor NUMERIC(10, 2) DEFAULT 0;`,
+		`ALTER TABLE agendamentos ADD COLUMN IF NOT EXISTS forma_pagamento VARCHAR(30) DEFAULT 'pix';`,
+
 		`CREATE TABLE IF NOT EXISTS movimentacoes_caixa (
 			id SERIAL PRIMARY KEY,
 			barbeiro_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
 			tipo VARCHAR(10) NOT NULL CHECK (tipo IN ('entrada', 'saida')),
+			categoria VARCHAR(50),
 			descricao VARCHAR(255) NOT NULL,
 			valor NUMERIC(10, 2) NOT NULL,
 			forma_pagamento VARCHAR(30) CHECK (forma_pagamento IN ('pix', 'dinheiro', 'cartao_credito', 'cartao_debito')),
 			criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+
+		`ALTER TABLE movimentacoes_caixa ADD COLUMN IF NOT EXISTS categoria VARCHAR(50);`,
 
 		`CREATE TABLE IF NOT EXISTS pedidos_materiais (
 			id SERIAL PRIMARY KEY,

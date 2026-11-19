@@ -79,6 +79,7 @@ type MovimentacaoCaixa struct {
 	BarbeiroID     *int64           `json:"barbeiro_id,omitempty"`
 	BarbeiroNome   string           `json:"barbeiro_nome,omitempty"`
 	Tipo           TipoMovimentacao `json:"tipo"`
+	Categoria      string           `json:"categoria,omitempty"`
 	Descricao      string           `json:"descricao"`
 	Valor          float64          `json:"valor"`
 	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
@@ -88,15 +89,17 @@ type MovimentacaoCaixa struct {
 }
 
 type Agendamento struct {
-	ID           int64             `json:"id"`
-	BarbeiroID   int64             `json:"barbeiro_id"`
-	BarbeiroNome string            `json:"barbeiro_nome,omitempty"`
-	ClienteNome  string            `json:"cliente_nome"`
-	Servico      string            `json:"servico"`
-	DataHora     time.Time         `json:"data_hora"`
-	HoraFormat   string            `json:"hora_formatada,omitempty"`
-	Status       StatusAgendamento `json:"status"`
-	CriadoEm     time.Time         `json:"criado_em"`
+	ID             int64             `json:"id"`
+	BarbeiroID     int64             `json:"barbeiro_id"`
+	BarbeiroNome   string            `json:"barbeiro_nome,omitempty"`
+	ClienteNome    string            `json:"cliente_nome"`
+	Servico        string            `json:"servico"`
+	Valor          float64           `json:"valor"`
+	FormaPagamento FormaPagamento    `json:"forma_pagamento,omitempty"`
+	DataHora       time.Time         `json:"data_hora"`
+	HoraFormat     string            `json:"hora_formatada,omitempty"`
+	Status         StatusAgendamento `json:"status"`
+	CriadoEm       time.Time         `json:"criado_em"`
 }
 
 type PedidoMaterial struct {
@@ -126,6 +129,7 @@ type AuthResponse struct {
 type NovaMovimentacaoRequest struct {
 	BarbeiroID     *int64           `json:"barbeiro_id"`
 	Tipo           TipoMovimentacao `json:"tipo"`
+	Categoria      string           `json:"categoria,omitempty"`
 	Descricao      string           `json:"descricao"`
 	Valor          float64          `json:"valor"`
 	FormaPagamento FormaPagamento   `json:"forma_pagamento"`
@@ -133,10 +137,12 @@ type NovaMovimentacaoRequest struct {
 }
 
 type NovoAgendamentoRequest struct {
-	BarbeiroID  int64     `json:"barbeiro_id"`
-	ClienteNome string    `json:"cliente_nome"`
-	Servico     string    `json:"servico"`
-	DataHora    time.Time `json:"data_hora"`
+	BarbeiroID     int64          `json:"barbeiro_id"`
+	ClienteNome    string         `json:"cliente_nome"`
+	Servico        string         `json:"servico"`
+	Valor          float64        `json:"valor"`
+	FormaPagamento FormaPagamento `json:"forma_pagamento,omitempty"`
+	DataHora       time.Time      `json:"data_hora"`
 }
 
 type NovoUsuarioRequest struct {
