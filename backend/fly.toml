@@ -3,7 +3,7 @@
 # See https://docs.fly.io/reference/configuration for information about how to use this file.
 #
 
-app = 'backend-snowy-tide-7292'
+app = 'barbearia-rocha-api'
 primary_region = 'gru'
 
 [build]

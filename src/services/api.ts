@@ -35,8 +35,12 @@ function formatTxDateTime(iso: string, serverDate?: string, serverTime?: string)
   return { date, timestamp };
 }
 
-const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-export const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
+const DEFAULT_PROD_API_URL = "https://barbearia-rocha-api.fly.dev";
+const ENV_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+export const API_BASE_URL =
+  !ENV_API_URL || ENV_API_URL.includes("backend-snowy-tide-7292.fly.dev")
+    ? DEFAULT_PROD_API_URL
+    : ENV_API_URL;
 
 const SESSION_KEY = "barbearia_rocha_user";
 const LOGO_CACHE_KEY = "barbearia_rocha_logo";
